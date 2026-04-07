@@ -1,0 +1,20 @@
+# Runtime data
+data/
+memory/
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Environment
+.env
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,191 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Decision Schema — Canonical Contract
+# ─────────────────────────────────────────────────────────────────────────
+# This schema defines the required fields for a DecisionObject to pass validation
+# and proceed through the decision engine pipeline.
+#
+# BREAKING CHANGES from prior schema:
+# - 'type' renamed to 'decision_class' (DecisionClass enum: D0-D6)
+# - 'expected_value', 'cost', 'risk' consolidated into ValueScores object
+# - 'urgency' replaced with 'time_horizon' (TimeHorizon enum)
+# - 'trust_score' (singular) replaced with trust_scores (TrustScores object, 7 dimensions)
+# - Added context_summary as required
+# - Added problem_statement as required (was implied, now explicit)
+# ─────────────────────────────────────────────────────────────────────────
+
+decision_object:
+  # Identity & Classification
+  required:
+    - decision_id
+    - title
+    - decision_class  # Previously named 'type' in old schema
+    - owner
+    - time_horizon    # Previously named 'urgency' in old schema
+    - reversibility
+  # Intent & Problem Definition
+  required:
+    - problem_statement
+    - requested_action
+    - context_summary
+  # Stakeholders & Constraints
+  optional:
+    - stakeholders
+    - constraints
+  # Scoring Inputs (human-provided)
+  # These are now composite objects, not single values
+  required:
+    - value_scores      # ValueScores object with 8 positive + 4 penalty dimensions
+    - trust_scores      # TrustScores object with 7 trust dimensions
+  optional:
+    - alignment_scores  # AlignmentScores object with doctrine/ethos/first-principles
+  # RTQL Pre-Filter
+  optional:
+    - rtql_input        # RTQLInput object for Recursive Trust Qualification Loop
+  # Evidence & Assumptions
+  required:
+    - evidence_refs     # Must provide at least one evidence reference
+  optional:
+    - assumptions       # Explicit assumptions underlying the decision
+    - unknowns          # Known unknowns / open questions
+  # Execution & Monitoring
+  optional:
+    - required_approvals
+    - execution_plan
+    - monitoring_metric
+    - rollback_trigger
+    - review_date
+  # State & Authority
+  optional:
+    - current_state     # Default: 'draft'
+    - actor_role        # Default: 'AI_Domain_Agent'
+    - has_missing_data  # Flag if critical data is unavailable
+    - ethical_conflict  # Flag if decision has ethical red flags
+  # Metadata
+  optional:
+    - created_at        # ISO timestamp, auto-generated
+
+# ─────────────────────────────────────────────────────────────────────────
+# Value Scores Schema
+# ─────────────────────────────────────────────────────────────────────────
+
+value_scores:
+  # Positive dimensions (each 0-5)
+  optional:
+    - revenue_impact             # Direct revenue or cost savings
+    - cost_efficiency            # Operational efficiency gains
+    - time_leverage              # Speed advantage or time saved
+    - strategic_alignment        # Alignment with organizational strategy
+    - customer_human_benefit     # Customer value or human benefit
+    - knowledge_asset_creation   # Knowledge assets or IP created
+    - compounding_potential      # Ability to compound over time
+    - reversibility              # Easy to reverse if wrong
+  # Penalty dimensions (each 0-5, subtracted from gross value)
+  optional:
+    - downside_risk              # Maximum downside exposure
+    - execution_drag             # Friction / effort to execute
+    - uncertainty                # Degree of unknowns
+    - ethical_misalignment       # Conflict with values
+
+# ─────────────────────────────────────────────────────────────────────────
+# Trust Scores Schema
+# ─────────────────────────────────────────────────────────────────────────
+
+trust_scores:
+  # Each dimension is 0-5
+  optional:
+    - evidence_quality           # Quality of supporting evidence
+    - logic_integrity            # Logical coherence of reasoning
+    - outcome_history            # Historical track record
+    - context_fit                # Fit to current context
+    - stakeholder_clarity        # Clarity of stakeholder roles
+    - risk_containment           # Ability to contain downside
+    - auditability               # How well the decision can be audited
+
+# ─────────────────────────────────────────────────────────────────────────
+# RTQL Input Schema
+# ─────────────────────────────────────────────────────────────────────────
+
+rtql_input:
+  # Claim metadata
+  optional:
+    - claim                      # The claim being evaluated
+    - source                     # Source of the claim
+    - is_identifiable            # Can source be identified/traced
+    - has_provenance             # Does source have clear provenance
+  # RTQL Scores (7 dimensions, smooth number set: 0,1,2,3,4,5,6,8,10,12)
+  optional:
+    - source_integrity
+    - exposure_count
+    - independence
+    - explainability
+    - replicability
+    - adversarial_robustness
+    - novelty_yield
+  # Causal checks
+  optional:
+    - reveals_causal_mechanism
+    - is_irreducible
+    - survives_authority_removal
+    - survives_context_shift
+
+# ─────────────────────────────────────────────────────────────────────────
+# Trust Certificate Schema
+# ─────────────────────────────────────────────────────────────────────────
+
+trust_certificate:
+  required:
+    - certificate_id
+    - decision_id
+    - cert_type        # CertificateType enum: QC, VC, TC, EC
+    - status            # CertificateStatus enum: ISSUED, DENIED, PENDING, EXPIRED, REVOKED
+  optional:
+    - issued_at
+    - expires_at
+    - evidence_basis
+    - denial_reasons
+    - scores_snapshot
+
+# ─────────────────────────────────────────────────────────────────────────
+# Enum Values Reference
+# ─────────────────────────────────────────────────────────────────────────
+
+enums:
+  decision_class:
+    - D0_INFORMATIONAL
+    - D1_REVERSIBLE_TACTICAL
+    - D2_OPERATIONAL
+    - D3_FINANCIAL
+    - D4_STRATEGIC
+    - D5_LEGAL_ETHICAL
+    - D6_IRREVERSIBLE_HIGH_BLAST
+  time_horizon:
+    - IMMEDIATE       # 0-7 days
+    - NEAR_TERM       # 8-30 days
+    - MID_TERM        # 31-180 days
+    - LONG_TERM       # 181+ days
+  reversibility:
+    - R1_EASILY_REVERSIBLE
+    - R2_MODERATELY_REVERSIBLE
+    - R3_COSTLY_TO_REVERSE
+    - R4_EFFECTIVELY_IRREVERSIBLE
+  certificate_type:
+    - QC              # Qualified Context
+    - VC              # Value Confirmed
+    - TC              # Trust Certified
+    - EC              # Execution Cleared
+  certificate_status:
+    - ISSUED
+    - DENIED
+    - PENDING
+    - EXPIRED
+    - REVOKED
+  rtql_stage:
+    - NOISE
+    - WEAK_SIGNAL
+    - ECHO_SIGNAL
+    - QUALIFIED
+    - CERTIFICATION_GAP
+    - CERTIFIED
+    - RESEARCH_GRADE
+    - FIRST_PRINCIPLES_CANDIDATE
+    - AXIOM_CANDIDATE

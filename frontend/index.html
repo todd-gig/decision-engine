@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Executive Decision Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/dashboard.css" />
+</head>
+<body>
+
+<!-- ── Shell ──────────────────────────────────────────────────────── -->
+<div class="shell">
+
+  <!-- Sidebar -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">E</div>
+      <div>
+        <div class="brand-name">Decision Engine</div>
+        <div class="brand-version">v2.0.0</div>
+      </div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Operations</div>
+      <button class="nav-item active" data-view="process">
+        <span class="nav-icon">&#9654;</span> Process Decision
+      </button>
+      <button class="nav-item" data-view="results">
+        <span class="nav-icon">&#9745;</span> Pipeline Results
+      </button>
+      <button class="nav-item" data-view="lifecycle">
+        <span class="nav-icon">&#8634;</span> State Machine
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Intelligence</div>
+      <button class="nav-item" data-view="learning">
+        <span class="nav-icon">&#9733;</span> Learning Loop
+      </button>
+      <button class="nav-item" data-view="outcomes">
+        <span class="nav-icon">&#9878;</span> Record Outcome
+      </button>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">System</div>
+      <button class="nav-item" data-view="config">
+        <span class="nav-icon">&#9881;</span> Configuration
+      </button>
+      <button class="nav-item" data-view="reference">
+        <span class="nav-icon">&#9776;</span> Quick Reference
+      </button>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="health-indicator" id="health-dot"></div>
+      <span id="health-label">Checking...</span>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <div class="main-area">
+
+    <!-- Header -->
+    <header class="topbar">
+      <button class="mobile-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>
+      <h1 id="view-title">Process Decision</h1>
+      <div class="topbar-actions">
+        <div class="status-badge" id="api-status">API: checking</div>
+      </div>
+    </header>
+
+    <!-- Content views -->
+    <main class="content" id="content">
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Process Decision
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view active" id="view-process">
+        <div class="view-header">
+          <h2>Submit Decision for Pipeline Processing</h2>
+          <p>Full 13-stage pipeline: Validation &rarr; RTQL &rarr; Value &rarr; Trust &rarr; Authority &rarr; Certificates &rarr; 7-Gate &rarr; Verdict</p>
+        </div>
+
+        <form id="decision-form" autocomplete="off">
+          <!-- Row 1: Identity -->
+          <div class="form-grid-2">
+            <div class="card">
+              <div class="card-label">Identity &amp; Classification</div>
+              <div class="field-stack">
+                <div class="field">
+                  <label for="f-title">Decision Title</label>
+                  <input type="text" id="f-title" placeholder="e.g. Deploy updated onboarding email template" required />
+                </div>
+                <div class="field-row-2">
+                  <div class="field">
+                    <label for="f-class">Decision Class</label>
+                    <select id="f-class" required>
+                      <option value="D0">D0 &mdash; Informational</option>
+                      <option value="D1" selected>D1 &mdash; Reversible Tactical</option>
+                      <option value="D2">D2 &mdash; Operational</option>
+                      <option value="D3">D3 &mdash; Financial</option>
+                      <option value="D4">D4 &mdash; Strategic</option>
+                      <option value="D5">D5 &mdash; Legal / Ethical</option>
+                      <option value="D6">D6 &mdash; Irreversible / High Blast</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="f-owner">Owner</label>
+                    <input type="text" id="f-owner" placeholder="e.g. marketing_ops" required />
+                  </div>
+                </div>
+                <div class="field-row-2">
+                  <div class="field">
+                    <label for="f-actor">Actor Role</label>
+                    <select id="f-actor">
+                      <option value="AI_Domain_Agent">AI Domain Agent</option>
+                      <option value="Domain_Owner">Domain Owner</option>
+                      <option value="Human_Executive">Human Executive</option>
+                      <option value="Human_CEO">Human CEO</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="f-state">Current State</label>
+                    <select id="f-state">
+                      <option value="draft">draft</option>
+                      <option value="qualified">qualified</option>
+                      <option value="value_confirmed">value_confirmed</option>
+                      <option value="trust_certified" selected>trust_certified</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-label">Intent &amp; Context</div>
+              <div class="field-stack">
+                <div class="field">
+                  <label for="f-problem">Problem Statement</label>
+                  <textarea id="f-problem" rows="2" placeholder="What problem does this decision solve?" required></textarea>
+                </div>
+                <div class="field">
+                  <label for="f-action">Requested Action</label>
+                  <textarea id="f-action" rows="2" placeholder="What action should be taken?" required></textarea>
+                </div>
+                <div class="field">
+                  <label for="f-stakeholders">Stakeholders <span class="hint">(comma-separated)</span></label>
+                  <input type="text" id="f-stakeholders" placeholder="e.g. marketing_ops, customer_success" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Row 2: Scores -->
+          <div class="form-grid-3">
+            <!-- Value Scores -->
+            <div class="card">
+              <div class="card-label">Value Scores <span class="hint">(0-5 each)</span></div>
+              <div class="score-grid" id="value-scores">
+                <div class="score-row">
+                  <label>Revenue Impact</label>
+                  <input type="range" min="0" max="5" value="3" data-key="revenue_impact" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Cost Efficiency</label>
+                  <input type="range" min="0" max="5" value="3" data-key="cost_efficiency" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Time Leverage</label>
+                  <input type="range" min="0" max="5" value="3" data-key="time_leverage" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Strategic Alignment</label>
+                  <input type="range" min="0" max="5" value="3" data-key="strategic_alignment" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Customer Benefit</label>
+                  <input type="range" min="0" max="5" value="3" data-key="customer_human_benefit" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Knowledge Creation</label>
+                  <input type="range" min="0" max="5" value="2" data-key="knowledge_asset_creation" />
+                  <span class="score-val">2</span>
+                </div>
+                <div class="score-row">
+                  <label>Compounding Potential</label>
+                  <input type="range" min="0" max="5" value="2" data-key="compounding_potential" />
+                  <span class="score-val">2</span>
+                </div>
+                <div class="score-row">
+                  <label>Reversibility</label>
+                  <input type="range" min="0" max="5" value="4" data-key="reversibility" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-divider">Penalties</div>
+                <div class="score-row penalty">
+                  <label>Downside Risk</label>
+                  <input type="range" min="0" max="5" value="1" data-key="downside_risk" />
+                  <span class="score-val">1</span>
+                </div>
+                <div class="score-row penalty">
+                  <label>Execution Drag</label>
+                  <input type="range" min="0" max="5" value="1" data-key="execution_drag" />
+                  <span class="score-val">1</span>
+                </div>
+                <div class="score-row penalty">
+                  <label>Uncertainty</label>
+                  <input type="range" min="0" max="5" value="1" data-key="uncertainty" />
+                  <span class="score-val">1</span>
+                </div>
+                <div class="score-row penalty">
+                  <label>Ethical Misalignment</label>
+                  <input type="range" min="0" max="5" value="0" data-key="ethical_misalignment" />
+                  <span class="score-val">0</span>
+                </div>
+              </div>
+              <div class="score-summary" id="value-summary">
+                <span>Gross: <strong>23</strong></span>
+                <span>Penalty: <strong>3</strong></span>
+                <span>Net: <strong class="net-positive">20</strong></span>
+              </div>
+            </div>
+
+            <!-- Trust Scores -->
+            <div class="card">
+              <div class="card-label">Trust Scores <span class="hint">(0-5 each)</span></div>
+              <div class="score-grid" id="trust-scores">
+                <div class="score-row">
+                  <label>Evidence Quality</label>
+                  <input type="range" min="0" max="5" value="4" data-key="evidence_quality" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-row">
+                  <label>Logic Integrity</label>
+                  <input type="range" min="0" max="5" value="4" data-key="logic_integrity" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-row">
+                  <label>Outcome History</label>
+                  <input type="range" min="0" max="5" value="3" data-key="outcome_history" />
+                  <span class="score-val">3</span>
+                </div>
+                <div class="score-row">
+                  <label>Context Fit</label>
+                  <input type="range" min="0" max="5" value="4" data-key="context_fit" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-row">
+                  <label>Stakeholder Clarity</label>
+                  <input type="range" min="0" max="5" value="4" data-key="stakeholder_clarity" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-row">
+                  <label>Risk Containment</label>
+                  <input type="range" min="0" max="5" value="4" data-key="risk_containment" />
+                  <span class="score-val">4</span>
+                </div>
+                <div class="score-row">
+                  <label>Auditability</label>
+                  <input type="range" min="0" max="5" value="4" data-key="auditability" />
+                  <span class="score-val">4</span>
+                </div>
+              </div>
+              <div class="score-summary" id="trust-summary">
+                <span>Total: <strong>27</strong> / 35</span>
+                <span>Tier: <strong class="tier-badge t3">T3</strong></span>
+              </div>
+            </div>
+
+            <!-- Alignment + Execution -->
+            <div class="card">
+              <div class="card-label">Alignment &amp; Execution</div>
+              <div class="score-grid" id="alignment-scores">
+                <div class="score-row">
+                  <label>Doctrine Alignment</label>
+                  <input type="range" min="0" max="10" value="8" data-key="doctrine_alignment" step="1" />
+                  <span class="score-val">0.8</span>
+                </div>
+                <div class="score-row">
+                  <label>Ethos Alignment</label>
+                  <input type="range" min="0" max="10" value="8" data-key="ethos_alignment" step="1" />
+                  <span class="score-val">0.8</span>
+                </div>
+                <div class="score-row">
+                  <label>First Principles</label>
+                  <input type="range" min="0" max="10" value="7" data-key="first_principles_alignment" step="1" />
+                  <span class="score-val">0.7</span>
+                </div>
+              </div>
+
+              <div class="field-stack" style="margin-top:16px">
+                <div class="field">
+                  <label for="f-evidence">Evidence Refs <span class="hint">(comma-separated)</span></label>
+                  <input type="text" id="f-evidence" placeholder="e.g. report.csv, analysis.pdf" value="supporting_data.csv" />
+                </div>
+                <div class="field">
+                  <label for="f-exec-plan">Execution Plan</label>
+                  <input type="text" id="f-exec-plan" placeholder="Steps to execute" />
+                </div>
+                <div class="field">
+                  <label for="f-monitoring">Monitoring Metric</label>
+                  <input type="text" id="f-monitoring" placeholder="e.g. conversion_rate >= 5%" />
+                </div>
+                <div class="field">
+                  <label for="f-rollback">Rollback Trigger</label>
+                  <input type="text" id="f-rollback" placeholder="e.g. error_rate > 2% over 24h" />
+                </div>
+                <div class="field">
+                  <label for="f-review">Review Date</label>
+                  <input type="date" id="f-review" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">
+              <span class="btn-icon">&#9654;</span> Process Decision
+            </button>
+            <button type="button" class="btn btn-ghost" id="reset-btn">Reset Form</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Pipeline Results
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-results">
+        <div class="view-header">
+          <h2>Pipeline Results</h2>
+          <p>Last processed decision verdict, certificates, and audit trail</p>
+        </div>
+        <div id="results-empty" class="empty-state">
+          <div class="empty-icon">&#9745;</div>
+          <div>No decision processed yet. Submit a decision from the Process view.</div>
+        </div>
+        <div id="results-content" style="display:none">
+          <!-- Verdict banner -->
+          <div class="verdict-banner" id="verdict-banner">
+            <div class="verdict-label">VERDICT</div>
+            <div class="verdict-value" id="verdict-value">—</div>
+            <div class="verdict-id" id="verdict-id">—</div>
+          </div>
+
+          <!-- Metrics row -->
+          <div class="metrics-row" id="metrics-row">
+            <div class="metric-card">
+              <div class="metric-label">Net Value</div>
+              <div class="metric-value" id="m-value">—</div>
+              <div class="metric-sub" id="m-value-class">—</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Trust Tier</div>
+              <div class="metric-value" id="m-trust">—</div>
+              <div class="metric-sub" id="m-trust-total">—</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Alignment</div>
+              <div class="metric-value" id="m-alignment">—</div>
+              <div class="metric-sub">composite</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Priority</div>
+              <div class="metric-value" id="m-priority">—</div>
+              <div class="metric-sub">score</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Next State</div>
+              <div class="metric-value" id="m-state">—</div>
+              <div class="metric-sub" id="m-state-from">—</div>
+            </div>
+          </div>
+
+          <!-- Certificates -->
+          <div class="card">
+            <div class="card-label">Certificate Chain</div>
+            <div class="cert-chain" id="cert-chain"></div>
+          </div>
+
+          <!-- Audit trail -->
+          <div class="card">
+            <div class="card-label">Audit Trail</div>
+            <div class="audit-trail" id="audit-trail"></div>
+          </div>
+
+          <!-- Executive summary -->
+          <div class="card">
+            <div class="card-label">Executive Summary</div>
+            <pre class="exec-summary" id="exec-summary"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: State Machine
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-lifecycle">
+        <div class="view-header">
+          <h2>Decision Lifecycle</h2>
+          <p>8-state progression with certificate requirements at each stage</p>
+        </div>
+        <div class="lifecycle-visual" id="lifecycle-visual"></div>
+
+        <div class="card" style="margin-top:24px">
+          <div class="card-label">Check Transition</div>
+          <div class="field-row-2" style="margin-bottom:16px">
+            <div class="field">
+              <label for="t-from">From State</label>
+              <select id="t-from">
+                <option value="draft">draft</option>
+                <option value="qualified">qualified</option>
+                <option value="value_confirmed">value_confirmed</option>
+                <option value="trust_certified">trust_certified</option>
+                <option value="execution_cleared">execution_cleared</option>
+                <option value="executed">executed</option>
+                <option value="reviewed">reviewed</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="t-to">To State</label>
+              <select id="t-to">
+                <option value="qualified">qualified</option>
+                <option value="value_confirmed">value_confirmed</option>
+                <option value="trust_certified">trust_certified</option>
+                <option value="execution_cleared">execution_cleared</option>
+                <option value="executed">executed</option>
+                <option value="reviewed">reviewed</option>
+                <option value="archived">archived</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="check-transition-btn">Check Transition</button>
+          <div id="transition-result" style="margin-top:12px"></div>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Learning Loop
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-learning">
+        <div class="view-header">
+          <h2>Institutional Learning</h2>
+          <p>Learning summary, class statistics, and unapplied recommendations</p>
+        </div>
+        <div class="form-grid-2">
+          <div class="card">
+            <div class="card-label">Learning Summary</div>
+            <div id="learning-summary" class="data-display">Loading...</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Unapplied Learnings</div>
+            <div id="unapplied-learnings" class="data-display">Loading...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Record Outcome
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-outcomes">
+        <div class="view-header">
+          <h2>Record Decision Outcome</h2>
+          <p>Feed actual results back to the learning loop for continuous calibration</p>
+        </div>
+        <form id="outcome-form" class="card">
+          <div class="field-stack">
+            <div class="field-row-2">
+              <div class="field">
+                <label for="o-decision-id">Decision ID</label>
+                <input type="text" id="o-decision-id" placeholder="DEC-XXXXXXXX" required />
+              </div>
+              <div class="field">
+                <label for="o-class">Decision Class</label>
+                <select id="o-class">
+                  <option value="D1">D1</option><option value="D2">D2</option>
+                  <option value="D3">D3</option><option value="D4">D4</option>
+                  <option value="D5">D5</option><option value="D6">D6</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="o-verdict">Original Verdict</label>
+              <select id="o-verdict">
+                <option value="auto_execute">auto_execute</option>
+                <option value="escalate_tier_1">escalate_tier_1</option>
+                <option value="escalate_tier_2">escalate_tier_2</option>
+                <option value="escalate_tier_3">escalate_tier_3</option>
+              </select>
+            </div>
+            <div class="field-row-2">
+              <div class="field">
+                <label for="o-exp-val">Expected Value</label>
+                <input type="number" id="o-exp-val" step="0.1" value="20" />
+              </div>
+              <div class="field">
+                <label for="o-act-val">Actual Value</label>
+                <input type="number" id="o-act-val" step="0.1" value="22" />
+              </div>
+            </div>
+            <div class="field-row-2">
+              <div class="field">
+                <label for="o-exp-days">Expected Days</label>
+                <input type="number" id="o-exp-days" value="7" />
+              </div>
+              <div class="field">
+                <label for="o-act-days">Actual Days</label>
+                <input type="number" id="o-act-days" value="5" />
+              </div>
+            </div>
+            <div class="field-row-2">
+              <div class="field">
+                <label for="o-risk-level">Expected Risk Level</label>
+                <select id="o-risk-level">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Risk Materialized?</label>
+                <div style="display:flex;gap:16px;padding:8px 0">
+                  <label class="radio-label"><input type="radio" name="o-risk-mat" value="false" checked /> No</label>
+                  <label class="radio-label"><input type="radio" name="o-risk-mat" value="true" /> Yes</label>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="o-summary">Outcome Summary</label>
+              <textarea id="o-summary" rows="2" placeholder="What actually happened?"></textarea>
+            </div>
+            <div class="field">
+              <label for="o-lessons">Lessons Learned <span class="hint">(one per line)</span></label>
+              <textarea id="o-lessons" rows="2" placeholder="Key takeaways..."></textarea>
+            </div>
+            <div class="field">
+              <label for="o-by">Recorded By</label>
+              <input type="text" id="o-by" placeholder="Your name/role" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Record Outcome</button>
+          </div>
+        </form>
+        <div id="outcome-result" style="margin-top:16px"></div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Configuration
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-config">
+        <div class="view-header">
+          <h2>Engine Configuration</h2>
+          <p>Active thresholds, trust multipliers, and transition rules</p>
+        </div>
+        <div id="config-content" class="card">
+          <div class="data-display">Loading configuration...</div>
+        </div>
+      </section>
+
+      <!-- ════════════════════════════════════════════════════════════
+           VIEW: Quick Reference
+           ════════════════════════════════════════════════════════════ -->
+      <section class="view" id="view-reference">
+        <div class="view-header">
+          <h2>Quick Reference</h2>
+          <p>Decision classes, trust tiers, verdicts, and pipeline stages at a glance</p>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="card">
+            <div class="card-label">Decision Classes</div>
+            <table class="ref-table">
+              <thead><tr><th>Class</th><th>Name</th><th>Auto?</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge badge-info">D0</span></td><td>Informational</td><td>N/A</td></tr>
+                <tr><td><span class="badge badge-success">D1</span></td><td>Reversible Tactical</td><td>Yes (T3+)</td></tr>
+                <tr><td><span class="badge badge-success">D2</span></td><td>Operational</td><td>Yes (T3+)</td></tr>
+                <tr><td><span class="badge badge-warning">D3</span></td><td>Financial</td><td>No</td></tr>
+                <tr><td><span class="badge badge-warning">D4</span></td><td>Strategic</td><td>No</td></tr>
+                <tr><td><span class="badge badge-danger">D5</span></td><td>Legal / Ethical</td><td>Never</td></tr>
+                <tr><td><span class="badge badge-danger">D6</span></td><td>Irreversible / High Blast</td><td>Never</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Trust Tiers</div>
+            <table class="ref-table">
+              <thead><tr><th>Tier</th><th>Range</th><th>Multiplier</th><th>Meaning</th></tr></thead>
+              <tbody>
+                <tr><td><span class="tier-badge t0">T0</span></td><td>&lt;10</td><td>0.2</td><td>Unqualified</td></tr>
+                <tr><td><span class="tier-badge t1">T1</span></td><td>10-16</td><td>0.5</td><td>Observed</td></tr>
+                <tr><td><span class="tier-badge t2">T2</span></td><td>17-23</td><td>0.8</td><td>Qualified</td></tr>
+                <tr><td><span class="tier-badge t3">T3</span></td><td>24-29</td><td>1.0</td><td>Certified</td></tr>
+                <tr><td><span class="tier-badge t4">T4</span></td><td>30-35</td><td>1.2</td><td>Delegated</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Execution Verdicts</div>
+            <table class="ref-table">
+              <thead><tr><th>Verdict</th><th>Meaning</th><th>Est. Success</th></tr></thead>
+              <tbody>
+                <tr><td><span class="verdict-chip auto">auto_execute</span></td><td>All gates pass</td><td>85-95%</td></tr>
+                <tr><td><span class="verdict-chip esc1">escalate_t1</span></td><td>Minor gate failure</td><td>70-85%</td></tr>
+                <tr><td><span class="verdict-chip esc2">escalate_t2</span></td><td>Significant gaps</td><td>55-75%</td></tr>
+                <tr><td><span class="verdict-chip esc3">escalate_t3</span></td><td>D5/D6, major blockers</td><td>40-65%</td></tr>
+                <tr><td><span class="verdict-chip block">block</span></td><td>Multiple gate failures</td><td>&lt;30%</td></tr>
+                <tr><td><span class="verdict-chip needs">needs_data</span></td><td>Insufficient information</td><td>Indeterminate</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <div class="card-label">7-Gate Authorization</div>
+            <table class="ref-table">
+              <thead><tr><th>#</th><th>Gate</th><th>Key Threshold</th></tr></thead>
+              <tbody>
+                <tr><td>1</td><td>Doctrine</td><td>alignment &ge; 0.3, ethics &le; 3</td></tr>
+                <tr><td>2</td><td>Trust Tier</td><td>tier &ge; class minimum</td></tr>
+                <tr><td>3</td><td>Value</td><td>net_value &ge; class threshold</td></tr>
+                <tr><td>4</td><td>Reversibility</td><td>R1/R2 for auto; D5/D6 human</td></tr>
+                <tr><td>5</td><td>Risk Containment</td><td>downside &le; 3, uncertainty &le; 3</td></tr>
+                <tr><td>6</td><td>Approval Routing</td><td>class-specific approvals</td></tr>
+                <tr><td>7</td><td>Monitoring</td><td>metric + date + rollback</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div class="card-label">15 First Principles</div>
+          <div class="principles-grid">
+            <div class="principle"><span class="p-num">1</span> Reality before preference</div>
+            <div class="principle"><span class="p-num">2</span> Value is relational</div>
+            <div class="principle"><span class="p-num">3</span> All resources are finite</div>
+            <div class="principle"><span class="p-num">4</span> Speed matters when opportunity decays</div>
+            <div class="principle"><span class="p-num">5</span> Trust is earned through repeated validated outcomes</div>
+            <div class="principle"><span class="p-num">6</span> Every system has incentives</div>
+            <div class="principle"><span class="p-num">7</span> Risk is asymmetrical</div>
+            <div class="principle"><span class="p-num">8</span> Compounding dominates isolated wins</div>
+            <div class="principle"><span class="p-num">9</span> Clarity reduces entropy</div>
+            <div class="principle"><span class="p-num">10</span> Evidence quality determines decision quality ceiling</div>
+            <div class="principle"><span class="p-num">11</span> Reversible decisions deserve speed; irreversible deserve care</div>
+            <div class="principle"><span class="p-num">12</span> Humans adopt what they understand and trust</div>
+            <div class="principle"><span class="p-num">13</span> Goodhart risk: metrics gamed if detached from reality</div>
+            <div class="principle"><span class="p-num">14</span> Ethics are a system constraint, not branding</div>
+            <div class="principle"><span class="p-num">15</span> The map is not the territory</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script src="js/dashboard.js"></script>
+</body>
+</html>

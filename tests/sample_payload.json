@@ -1,0 +1,99 @@
+{
+  "decision": {
+    "decision_id": "DEC-sample-001",
+    "title": "Deploy updated onboarding email template",
+    "decision_class": "D1",
+    "owner": "marketing_ops",
+    "time_horizon": "immediate",
+    "reversibility": "R1",
+    "problem_statement": "Current onboarding email has 12% open rate, below 18% benchmark",
+    "requested_action": "Replace current template with A/B tested winner",
+    "context_summary": "A/B test over 2 weeks showed new template at 22% open rate with no CAN-SPAM violations",
+    "stakeholders": [
+      "marketing_ops",
+      "customer_success"
+    ],
+    "constraints": [
+      "Must maintain CAN-SPAM compliance",
+      "Cannot change email frequency"
+    ],
+    "value_scores": {
+      "revenue_impact": 2,
+      "cost_efficiency": 3,
+      "time_leverage": 4,
+      "strategic_alignment": 3,
+      "customer_human_benefit": 3,
+      "knowledge_asset_creation": 2,
+      "compounding_potential": 2,
+      "reversibility": 5,
+      "downside_risk": 1,
+      "execution_drag": 1,
+      "uncertainty": 1,
+      "ethical_misalignment": 0
+    },
+    "trust_scores": {
+      "evidence_quality": 4,
+      "logic_integrity": 4,
+      "outcome_history": 3,
+      "context_fit": 4,
+      "stakeholder_clarity": 4,
+      "risk_containment": 4,
+      "auditability": 4
+    },
+    "alignment_scores": {
+      "doctrine_alignment": 0.8,
+      "ethos_alignment": 0.9,
+      "first_principles_alignment": 0.7,
+      "anti_pattern_flags": [],
+      "applied_principles": [
+        "Speed matters when opportunity decays",
+        "Evidence quality determines decision quality ceiling"
+      ]
+    },
+    "evidence_refs": [
+      "ab_test_results_q1_2026.csv",
+      "email_compliance_checklist.md",
+      "template_performance_analysis.md"
+    ],
+    "assumptions": [
+      "Open rate improvement will sustain post-deployment",
+      "Template works across all email clients",
+      "Customer segment homogeneity is preserved"
+    ],
+    "unknowns": [
+      "Long-term click-through impact unclear",
+      "Effect on unsubscribe rate unknown",
+      "Regional variation in performance"
+    ],
+    "required_approvals": [],
+    "execution_plan": "Swap template in email platform, monitor for 7 days, compare against baseline",
+    "monitoring_metric": "email_open_rate >= 18%",
+    "rollback_trigger": "open_rate < 15% over 48hrs",
+    "review_date": "2026-03-31",
+    "current_state": "trust_certified",
+    "actor_role": "AI_Domain_Agent",
+    "has_missing_data": false,
+    "ethical_conflict": false,
+    "rtql_input": {
+      "claim": "New email template outperforms current by 83%",
+      "source": "Internal A/B test platform",
+      "is_identifiable": true,
+      "has_provenance": true,
+      "scores": {
+        "source_integrity": 8,
+        "exposure_count": 5,
+        "independence": 6,
+        "explainability": 8,
+        "replicability": 6,
+        "adversarial_robustness": 6,
+        "novelty_yield": 3
+      },
+      "causal_checks": {
+        "reveals_causal_mechanism": false,
+        "is_irreducible": false,
+        "survives_authority_removal": true,
+        "survives_context_shift": false
+      }
+    }
+  }
+}

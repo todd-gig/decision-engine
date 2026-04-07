@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Decision Logic Pack — Bias-Aware Input Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+<div class="app-wrapper">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div>
+      <h1>Decision Logic Pack</h1>
+      <div class="subtitle">Bias-aware input engine · Rule of 7s · Smooth-number scoring</div>
+    </div>
+    <div class="header-badge" id="prompt-count-badge" style="display:none"></div>
+  </header>
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <nav class="sidebar">
+    <div class="sidebar-section">
+      <h3>Steps</h3>
+      <ul class="step-list">
+        <li data-goto="1" class="active">
+          <div class="step-num">1</div>
+          Context
+        </li>
+        <li data-goto="2">
+          <div class="step-num">2</div>
+          Data Entry
+        </li>
+        <li data-goto="3">
+          <div class="step-num">3</div>
+          Discrepancy Review
+        </li>
+        <li data-goto="4">
+          <div class="step-num">4</div>
+          Trust Summary
+        </li>
+      </ul>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Cognitive budget</h3>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--sp-3)">
+        Fields used (max 7 per Miller's Law)
+      </div>
+      <div class="budget-dots">
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+        <div class="budget-dot"></div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Active principles</h3>
+      <ul style="font-size:var(--text-xs);color:var(--color-text-muted);list-style:none;display:flex;flex-direction:column;gap:var(--sp-2)">
+        <li>✓ Miller's Law: max 7 per step</li>
+        <li>✓ No anchors before entry</li>
+        <li>✓ Three-point estimates</li>
+        <li>✓ Smooth-number categories</li>
+        <li>✓ Benford's Law monitoring</li>
+        <li>✓ Digit preference detection</li>
+        <li>✓ RTQL score alignment</li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ── Main ────────────────────────────────────────────────────────────── -->
+  <main class="main-content">
+
+    <!-- Step 1: Context -->
+    <div class="form-step active" id="step-1">
+      <div class="step-header">
+        <h2>Decision context</h2>
+        <p>Define the situation before entering any values. Framing is captured here, not at the data-entry stage, to prevent cross-contamination.</p>
+      </div>
+
+      <div class="card">
+        <div class="field-group">
+          <!-- Domain selector injected by JS -->
+          <div id="domain-slot"></div>
+
+          <!-- Situation -->
+          <div class="field">
+            <label>Situation description</label>
+            <span class="field-hint">Describe what decision needs to be made. Be specific — vague framing reduces decision quality.</span>
+            <textarea id="situation-input" placeholder="e.g. We need to decide whether to expand to a new market segment given current pipeline capacity…"></textarea>
+          </div>
+
+          <!-- Urgency slider injected by JS -->
+          <div id="urgency-slot"></div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" data-goto="2">Continue to data entry →</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Data entry -->
+    <div class="form-step" id="step-2">
+      <div class="step-header">
+        <h2>Data entry</h2>
+        <p>All numeric fields use range estimates or smooth-number categories. Reference values are suppressed until after you submit — this prevents anchoring bias.</p>
+        <div class="cognitive-budget">
+          <span>Fields this step:</span>
+          <div class="budget-dots">
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+            <div class="budget-dot used"></div>
+          </div>
+          <span>7 / 7</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Primary estimate</div>
+            <div class="card-subtitle">Three-point input prevents false precision and exposes overconfidence.</div>
+          </div>
+        </div>
+        <div id="field-1-slot"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Order of magnitude</div>
+            <div class="card-subtitle">Categorical selection with smooth-number midpoints eliminates round-number heaping.</div>
+          </div>
+        </div>
+        <div id="field-2-slot"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Data confidence</div>
+            <div class="card-subtitle">Qualitative 7-point scale (no numeric ticks). Slider position is your confidence weight.</div>
+          </div>
+        </div>
+        <div id="field-3-slot"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Comparable values (optional)</div>
+            <div class="card-subtitle">Additional data points analyzed for Benford's Law conformance and digit preference bias.</div>
+          </div>
+        </div>
+        <div id="comparables-slot" class="field-group"></div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" data-goto="1">← Back</button>
+        <button class="btn btn-primary" data-goto="3">Review discrepancies →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: Discrepancy review -->
+    <div class="form-step" id="step-3">
+      <div class="step-header">
+        <h2>Discrepancy review</h2>
+        <p>The engine detected patterns in your data that may reflect cognitive bias. Answer each question to provide context — this improves decision quality and is encoded into memory.</p>
+      </div>
+
+      <div class="card">
+        <div id="prompt-list">
+          <div class="empty-state">Enter data in step 2 to generate discrepancy analysis.</div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" data-goto="2">← Back</button>
+        <button class="btn btn-primary" data-goto="4">View trust summary →</button>
+      </div>
+    </div>
+
+    <!-- Step 4: Trust summary -->
+    <div class="form-step" id="step-4">
+      <div class="step-header">
+        <h2>Trust summary</h2>
+        <p>Final decision readiness score, RTQL-aligned, with all captured context.</p>
+      </div>
+      <div id="step-4-summary"></div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" data-goto="3">← Back</button>
+        <button class="btn btn-primary" id="submit-btn">Submit to decision engine</button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Right panel: live discrepancy monitor ───────────────────────────── -->
+  <aside class="discrepancy-panel">
+
+    <div class="panel-section">
+      <h3>Overall trust</h3>
+      <div id="trust-ring-container"></div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Per-field trust</h3>
+      <div id="trust-meter">
+        <div class="empty-state">No fields analyzed.</div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Benford's Law</h3>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--sp-2)">
+        First-digit distribution. Blue = observed, grey = expected.
+        Deviation indicates estimation or fabrication.
+      </div>
+      <div id="benford-chart">
+        <div class="empty-state">Enter ≥5 numeric values.</div>
+      </div>
+    </div>
+
+  </aside>
+
+</div>
+
+<script type="module" src="js/app.js"></script>
+
+</body>
+</html>

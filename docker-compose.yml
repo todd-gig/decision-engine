@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  decision-engine:
+    build: .
+    container_name: decision-engine
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./memory:/app/memory
+      - ./config:/app/config
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
