@@ -299,4 +299,74 @@ def process_decision(
     result.audit_trail = logger.records
     result.executive_summary = generate_executive_summary(result)
 
+    # ──────────────────────────────────────────
+    # STAGE 10: INTELLIGENCE SILO — AUTO-RECORD
+    # Every completed decision is automatically ingested as a memory.
+    # The silo node is optional; failure never blocks the pipeline.
+    # ──────────────────────────────────────────
+    _auto_record_memory(decision, result)
+
     return result
+
+
+def _auto_record_memory(decision: "DecisionObject", result: "PipelineResult") -> None:
+    """Record completed pipeline result into the intelligence silo memory hierarchy.
+
+    Non-blocking: any error is logged and swallowed so the pipeline always returns.
+    The node is lazily imported to avoid a hard dependency on the silo package.
+    """
+    try:
+        from intelligence_silo import get_node  # type: ignore
+        node = get_node()
+        if node is None:
+            return
+
+        payload = _serialize_result(decision, result)
+        node.record_decision(
+            pipeline_result=payload,
+            title=getattr(decision, "title", decision.decision_id),
+            domain=getattr(decision, "domain", "general"),
+        )
+    except ImportError:
+        pass  # Intelligence silo not installed — skip silently
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Intelligence silo record failed (non-fatal): %s", exc
+        )
+
+
+def _serialize_result(decision: "DecisionObject", result: "PipelineResult") -> dict:
+    """Convert PipelineResult into the dict format expected by DecisionMemoryRecorder."""
+    cert_status: dict = {}
+    if result.certificate_chain:
+        chain = result.certificate_chain
+        if chain.qc:
+            cert_status["qc"] = "issued" if chain.qc.is_valid() else "failed"
+        if chain.vc:
+            cert_status["vc"] = "issued" if chain.vc.is_valid() else "failed"
+        if chain.tc:
+            cert_status["tc"] = "issued" if chain.tc.is_valid() else "failed"
+        if chain.ec:
+            cert_status["ec"] = "issued" if chain.ec.is_valid() else "failed"
+
+    exec_verdict = ""
+    if result.execution_packet:
+        exec_verdict = result.execution_packet.verdict.value
+
+    return {
+        "decision_id": result.decision_id,
+        "title": getattr(decision, "title", result.decision_id),
+        "domain": getattr(decision, "domain", "general"),
+        "net_value_score": result.net_value_score,
+        "value_classification": result.value_classification,
+        "trust_tier": result.trust_tier.value if hasattr(result.trust_tier, "value") else str(result.trust_tier),
+        "trust_total": result.trust_total,
+        "alignment_composite": result.alignment_composite,
+        "priority_score": result.priority_score,
+        "executive_summary": result.executive_summary,
+        "certificate_status": cert_status,
+        "execution": {"verdict": exec_verdict},
+        "recommended_action": exec_verdict,
+        "success": result.success,
+    }
