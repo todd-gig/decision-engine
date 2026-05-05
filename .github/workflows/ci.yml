@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "feat/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────
+  # Unit + integration tests (no Docker)
+  # ─────────────────────────────────────────────
+  test:
+    name: pytest (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --tb=short --timeout=60
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || 'sk-test-placeholder' }}
+
+      - name: Validate package import
+        run: |
+          python -c "
+          from engine import __version__, process_decision
+          from engine.models import DecisionObject, PipelineResult
+          print(f'decision-engine v{__version__} imports OK')
+          "
+
+  # ─────────────────────────────────────────────
+  # Pipeline smoke test — full 9-stage run
+  # ─────────────────────────────────────────────
+  smoke:
+    name: Smoke test — full pipeline
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Run sample payload through full pipeline
+        run: |
+          python - <<'EOF'
+          import json
+          from engine.models import (
+              DecisionObject, DecisionClass, ReversibilityTag, TimeHorizon,
+              ValueScores, TrustScores, AlignmentScores, ExecutionVerdict,
+          )
+          from engine.pipeline import process_decision
+
+          d = DecisionObject(
+              title="CI Smoke Test Decision",
+              decision_class=DecisionClass.D1_REVERSIBLE_TACTICAL,
+              owner="ci",
+              time_horizon=TimeHorizon.IMMEDIATE,
+              reversibility=ReversibilityTag.R1_EASILY_REVERSIBLE,
+              problem_statement="Validate pipeline runs end-to-end",
+              requested_action="Return any valid verdict",
+              context_summary="CI environment",
+              stakeholders=["ci"],
+              evidence_refs=["ci_smoke.md"],
+              execution_plan="automated",
+              monitoring_metric="pipeline_success == true",
+              rollback_trigger="pipeline_success == false",
+              review_date="2026-12-31",
+              current_state="trust_certified",
+              actor_role="AI_Domain_Agent",
+              value_scores=ValueScores(
+                  revenue_impact=3, cost_efficiency=3, time_leverage=3,
+                  strategic_alignment=3, customer_human_benefit=3,
+                  knowledge_asset_creation=2, compounding_potential=2, reversibility=5,
+                  downside_risk=1, execution_drag=1, uncertainty=1, ethical_misalignment=0,
+              ),
+              trust_scores=TrustScores(
+                  evidence_quality=4, logic_integrity=4, outcome_history=3,
+                  context_fit=4, stakeholder_clarity=4, risk_containment=4, auditability=4,
+              ),
+              alignment_scores=AlignmentScores(
+                  doctrine_alignment=0.8, ethos_alignment=0.9,
+                  first_principles_alignment=0.8,
+              ),
+          )
+          result = process_decision(d)
+          assert result.success, f"Pipeline failed: {result.validation_errors}"
+          assert result.execution_packet is not None
+          assert result.priority_score > 0
+          print(f"OK  verdict={result.execution_packet.verdict.value}")
+          print(f"OK  priority={result.priority_score:.2f}")
+          print(f"OK  trust_tier={result.trust_tier.value}")
+          print(f"OK  net_value={result.net_value_score}")
+          EOF
+
+  # ─────────────────────────────────────────────
+  # Package build — verify pip install works
+  # ─────────────────────────────────────────────
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Verify wheel installs cleanly
+        run: |
+          pip install dist/*.whl
+          python -c "from engine import __version__; print(f'Wheel installs OK: v{__version__}')"
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: decision-engine-dist
+          path: dist/
+          retention-days: 7
