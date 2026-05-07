@@ -1,6 +1,6 @@
-# Runtime data
-data/
-memory/
+# Runtime data — anchored to root so it doesn't swallow `legacy/intelligence_engine/data/`
+/data/
+/memory/
 *.pyc
 __pycache__/
 .pytest_cache/

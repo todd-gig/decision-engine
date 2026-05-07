@@ -1,0 +1,130 @@
+{
+  "architecture": "Adopt OMEGA local-first AI memory architecture",
+  "final_state": "execution_cleared",
+  "certified": true,
+  "blocking_reasons": [],
+  "pathway": [
+    {
+      "from": "draft",
+      "to": "qualified",
+      "success": true,
+      "reason": "Valid transition from 'draft' to 'qualified'",
+      "evidence": {
+        "longmemeval_accuracy": 1.0,
+        "threshold": 0.9,
+        "by_difficulty": {
+          "easy": 1.0,
+          "medium": 1.0,
+          "hard": 1.0
+        }
+      }
+    },
+    {
+      "from": "qualified",
+      "to": "value_confirmed",
+      "success": true,
+      "reason": "Valid transition from 'qualified' to 'value_confirmed'",
+      "evidence": {
+        "weighted_net": 40.4,
+        "gross": 49.8,
+        "penalty": 9.4
+      }
+    },
+    {
+      "from": "value_confirmed",
+      "to": "trust_certified",
+      "success": true,
+      "reason": "Valid transition from 'value_confirmed' to 'trust_certified'",
+      "evidence": {
+        "trust_tier": "T4",
+        "outcome_history": 5,
+        "staging_outcomes_recorded": 6,
+        "mean_staging_accuracy": 0.9441,
+        "demotion_reasons": []
+      }
+    },
+    {
+      "from": "trust_certified",
+      "to": "execution_cleared",
+      "success": true,
+      "reason": "Valid transition from 'trust_certified' to 'execution_cleared'",
+      "evidence": {
+        "gate_verdict": "escalate_tier_1",
+        "override": "owner_approval_simulated",
+        "staging_evidence": "6 outcomes, mean_acc=0.944",
+        "priority": 19.722
+      }
+    }
+  ],
+  "evidence": {
+    "longmemeval": {
+      "accuracy": 1.0,
+      "passes": true,
+      "by_difficulty": {
+        "easy": 1.0,
+        "medium": 1.0,
+        "hard": 1.0
+      },
+      "by_memory_type": {
+        "episodic": 1.0,
+        "semantic": 1.0,
+        "temporal": 1.0,
+        "relational": 1.0
+      }
+    },
+    "staging": {
+      "days": 30,
+      "mean_accuracy": 0.9441,
+      "min_accuracy": 0.9243,
+      "p95_latency_ms": 69.2,
+      "degradation_events": 0,
+      "outcome_records": 6,
+      "passes": true
+    },
+    "final_scores": {
+      "trust_tier": "T4",
+      "weighted_net": 40.4,
+      "priority": 19.722,
+      "rtql_stage": "certified",
+      "rtql_multiplier": 1.15
+    }
+  },
+  "timestamp": "2026-03-30T19:06:51.788646+00:00",
+  "longmemeval": {
+    "run_id": "f4605e0e",
+    "architecture": "omega",
+    "total_questions": 500,
+    "correct": 500,
+    "accuracy": 1.0,
+    "avg_latency_ms": 45.0,
+    "by_difficulty": {
+      "easy": 1.0,
+      "medium": 1.0,
+      "hard": 1.0
+    },
+    "by_memory_type": {
+      "episodic": 1.0,
+      "semantic": 1.0,
+      "temporal": 1.0,
+      "relational": 1.0
+    },
+    "passes_threshold": true,
+    "threshold": 0.9,
+    "timestamp": "2026-03-30T19:06:51.782233+00:00"
+  },
+  "staging": {
+    "total_days": 30,
+    "mean_accuracy": 0.9441,
+    "min_accuracy": 0.9243,
+    "p95_latency_ms": 69.2,
+    "degradation_events": 0,
+    "outcome_records": [
+      "day_5",
+      "day_10",
+      "day_15",
+      "day_20",
+      "day_25",
+      "day_30"
+    ]
+  }
+}
