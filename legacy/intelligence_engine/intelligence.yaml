@@ -1,0 +1,20 @@
+intelligence:
+  cycle_threshold: 5          # Decisions before intelligence cycle triggers
+  min_pattern_occurrences: 2  # Min decisions to confirm a pattern
+  weight_adjustment_cap: 0.3  # Max change per weight per cycle
+  weight_min: 0.1             # Floor for any weight
+  weight_max: 5.0             # Ceiling for any weight
+  dry_run_by_default: true    # Safety: show changes, don't apply without review
+
+claude:
+  model: "claude-opus-4-5"
+  max_tokens: 2048
+  mock_mode: false             # Set true to run without API key (auto-detected)
+
+persistence:
+  db_path: "data/intelligence.db"
+  generated_dir: "data/generated"
+
+demo:
+  run_all_phases: true
+  phases_to_skip: []

@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Claude Decision Logic Engine Configuration
+# ─────────────────────────────────────────────────────────────────────────
+# This configuration file defines all tunable parameters for the decision engine.
+#
+# KEY SYSTEMS:
+# 1. Thresholds: Execution gates for value and trust scores
+# 2. Value Weights: Asymmetric multipliers for 8 value dimensions
+# 3. Penalty Weights: Asymmetric multipliers for 4 risk/penalty dimensions
+# 4. Trust Multipliers: Two systems
+#    - Legacy tier multipliers (T0-T4) used by weighted_scoring.py
+#    - RTQL stage multipliers (9 stages) used by pipeline RTQL prefilter (STAGE 2)
+# 5. Authority Matrix: Who can execute which decision class, minimum trust required
+# 6. Valid Transitions: State machine valid state transitions
+#
+# INTEGRATION:
+# - RTQL filter (pipeline STAGE 2) applies rtql_trust_multiplier to raw value
+# - Value scoring (pipeline STAGE 3) uses rtql_result.trust_multiplier (from filter)
+# - Authority enforcement checks trust tier against authority_matrix min_trust
+#
+# ─────────────────────────────────────────────────────────────────────────
+
+thresholds:
+  value_execute_min: 14.0
+  value_escalate_min: 8.0
+  trust_execute_min: 3.5
+  trust_recommend_min: 2.2
+
+value_weights:
+  revenue_impact: 1.5
+  cost_efficiency: 1.2
+  time_leverage: 1.3
+  strategic_alignment: 2.0
+  customer_benefit: 1.4
+  knowledge_creation: 1.1
+  compounding_potential: 1.8
+  reversibility: 1.0
+
+penalty_weights:
+  downside_risk: 2.0
+  execution_drag: 1.2
+  uncertainty: 1.5
+  ethical_misalignment: 3.0
+
+# Legacy trust tier multipliers (used by weighted_scoring.py tier-based system)
+trust_multiplier:
+  T0: 0.2
+  T1: 0.5
+  T2: 0.8
+  T3: 1.0
+  T4: 1.2
+
+# RTQL trust stage multipliers (used by pipeline STAGE 2 RTQL prefilter)
+# Maps 9-stage RTQL progression to trust-adjusted value multipliers
+rtql_trust_multiplier:
+  noise: 0.00
+  weak_signal: 0.35
+  echo_signal: 0.50
+  qualified: 1.00
+  certification_gap: 0.85
+  certified: 1.15
+  research_grade: 1.30
+  first_principles_candidate: 1.50
+  axiom_candidate: 1.50
+
+# RTQL write target routing (defines where each RTQL stage is written)
+rtql_write_targets:
+  noise: quarantine
+  weak_signal: staging
+  echo_signal: staging
+  qualified: candidate_registry
+  certification_gap: candidate_registry
+  certified: operational_registry
+  research_grade: insight_registry
+  first_principles_candidate: principles_registry
+  axiom_candidate: axiom_review_queue
+
+authority_matrix:
+  D1:
+    min_trust: T3
+    executor: AI_Domain_Agent
+    required_approval: none
+  D2:
+    min_trust: T3
+    executor: AI_Domain_Agent
+    required_approval: Domain_Owner
+  D3:
+    min_trust: T2
+    executor: Domain_Owner
+    required_approval: Human_Executive
+  D4:
+    min_trust: T2
+    executor: Human_Executive
+    required_approval: Human_CEO
+  D5:
+    min_trust: T1
+    executor: Human_Executive
+    required_approval: Human_CEO
+  D6:
+    min_trust: T1
+    executor: Human_CEO
+    required_approval: Human_CEO
+
+valid_transitions:
+  draft: [qualified, execution_cleared]
+  qualified: [value_confirmed, draft]
+  value_confirmed: [trust_certified, qualified]
+  trust_certified: [execution_cleared, qualified]
+  execution_cleared: [executed, trust_certified]
+  executed: [reviewed]
+  reviewed: [archived, qualified]
+  archived: []
