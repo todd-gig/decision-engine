@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gigaton.drift-sentinel</string>
+
+  <!-- Slack posting deliberately omitted — Slack integrations are
+       user-level only. Reports land in reports/ for the operator
+       to review on their own cadence. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/admin/Documents/GitHub/decision-engine/drift_sentinel/drift_scan.py</string>
+    <string>--source</string>
+    <string>local_codebase,downloads,github</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/admin/Documents/GitHub/decision-engine/drift_sentinel</string>
+
+  <!-- Sundays at 8:00 AM local time -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>0</integer>
+    <key>Hour</key>
+    <integer>8</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/admin/Documents/GitHub/decision-engine/drift_sentinel/reports/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/admin/Documents/GitHub/decision-engine/drift_sentinel/reports/launchd.stderr.log</string>
+
+  <!-- Pass through API tokens / Slack webhook from the user shell.
+       launchctl load -w copies these from the calling environment;
+       if you'd rather hard-code, set them under EnvironmentVariables. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!--
+    <key>SLACK_WEBHOOK_URL</key>
+    <string>https://hooks.slack.com/services/...</string>
+    <key>GH_TOKEN</key>
+    <string>...</string>
+    -->
+  </dict>
+</dict>
+</plist>

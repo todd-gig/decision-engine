@@ -1,0 +1,448 @@
+# Gigaton Drift Sentinel — Machine-Readable Rule Set
+# Each rule maps to a principle/framework in GIGATON_CANONICAL_FIRST_PRINCIPLES.md
+# Loaded by drift_scan.py and applied recursively to every artifact.
+#
+# Schema:
+#   id: stable identifier (CRIT-* / MAJ-* / MIN-* / INFO-*)
+#   principle_ref: §X of canonical doc
+#   severity: critical | major | minor | info
+#   scope: which artifact types this applies to
+#     - codebase: any repo with package.json/pyproject.toml/Dockerfile
+#     - markdown: .md docs (memory, plans, briefs)
+#     - decision: Decision Records / PRs / proposals
+#     - clickup_task: ClickUp items
+#     - drive_doc: Google Drive files
+#   detection: how the scanner identifies a violation (regex/structural/missing-field)
+#   remediation: short fix instructions
+
+version: 1.0.0
+generated: 2026-05-05
+canonical_ref: GIGATON_CANONICAL_FIRST_PRINCIPLES.md
+
+# ============================================================================
+# CRITICAL — NON-NEGOTIABLE VIOLATIONS (block deploy / require remediation)
+# ============================================================================
+
+rules:
+
+  - id: CRIT-001
+    name: automation_without_human_override
+    principle_ref: §1.1, §4
+    severity: critical
+    scope: [codebase, decision, markdown]
+    detection:
+      type: structural
+      check: |
+        For any code/plan that auto-executes (D1-D2 with R3/R4) or any LLM
+        agent loop, verify presence of:
+          - rollback_trigger field/function
+          - human-in-the-loop escape (override flag, manual approval branch)
+          - max_attempts + dead_letter on jobs
+      patterns:
+        - "while True"
+        - "auto_execute"
+        - "agent.run"
+        - "claude_agent_options"
+      negative_signal: missing rollback/override
+    remediation: Add rollback path, override flag, and dead-letter queue. Reference §5.4 D5/D6.
+
+  - id: CRIT-002
+    name: ethical_misalignment_above_threshold
+    principle_ref: §1.2, §2.14
+    severity: critical
+    scope: [decision, markdown, clickup_task]
+    detection:
+      type: field_value
+      check: ethical_misalignment > 3 OR ethical_conflict == true
+    remediation: Decision must BLOCK and escalate to Tier 3. No override.
+
+  - id: CRIT-003
+    name: prompt_without_versioning
+    principle_ref: §6
+    severity: critical
+    scope: [codebase]
+    detection:
+      type: regex_in_python_or_ts
+      patterns:
+        - 'anthropic\.messages\.create'
+        - 'client\.messages\.create'
+        - 'openai\.chat\.completions'
+      negative_signal: no nearby `prompt_version` / `schema_version` attached to the call or audit record
+    remediation: Attach prompt_version + schema_version to every prod LLM call. Persist with audit record.
+
+  - id: CRIT-004
+    name: undefined_ownership
+    principle_ref: §4
+    severity: critical
+    scope: [decision, clickup_task]
+    detection:
+      type: missing_field
+      required_fields: [owner]
+      check: |
+        Applies ONLY to artifacts that are explicit decision records. The
+        artifact must contain at least one of these markers:
+          - YAML frontmatter `type: decision_record`
+          - Filename matching `decision_*.md` / `DR-*.md` / `RFC-*.md`
+          - First H1 includes "Decision Record" / "RFC" / "Decision:"
+          - Frontmatter `decision_id:` / `dr_id:` field present
+        Once classified as a decision record, the artifact MUST have a
+        non-empty `owner:` field. Casual mentions of the word "decision"
+        in body text DO NOT trigger this rule (prior version produced
+        false positives on CLAUDE.md / README.md).
+    remediation: Assign owner before QC certificate can be issued.
+
+  - id: CRIT-005
+    name: decisions_without_auditability
+    principle_ref: §4, §1.6
+    severity: critical
+    scope: [decision, markdown]
+    detection:
+      type: missing_field
+      required_fields: [evidence_refs]
+      check: evidence_refs is empty array
+    remediation: Cite evidence sources. Empty evidence_refs → TC certificate DENIED.
+
+  - id: CRIT-006
+    name: action_without_qualification
+    principle_ref: §4, §5.4
+    severity: critical
+    scope: [decision]
+    detection:
+      type: structural
+      check: |
+        decision_class in [D3, D4, D5, D6] AND required_approvals is empty
+    remediation: List approvers per Authority Matrix (§5.4). D5/D6 require Human_CEO.
+
+  - id: CRIT-007
+    name: provider_lock_in
+    principle_ref: §7, §4
+    severity: critical
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        AI/LLM call sites missing both `provider` and `model` fields, OR
+        hardcoded provider with no abstraction interface
+      patterns:
+        - 'AI(?:Provider|Adapter|Client)'
+    remediation: Implement AIProvider interface. Pass provider + model at runtime.
+
+  - id: CRIT-008
+    name: fake_market_data
+    principle_ref: §7 (no fake external data), Pricing pattern
+    severity: critical
+    scope: [codebase, markdown]
+    detection:
+      type: structural
+      check: |
+        Pricing/scoring output schemas missing `assumptions[]` field, or
+        seeded values not labeled as synthetic
+      patterns:
+        - 'recommended_(base|peak|weekend)_rate'
+        - 'pricing_engine'
+    remediation: Always populate assumptions[]. Swap for actuals when data arrives. Never silently seed.
+
+  - id: CRIT-009
+    name: irreversible_without_mandatory_human
+    principle_ref: §1.1, §2.11, §5.4
+    severity: critical
+    scope: [decision, codebase]
+    detection:
+      type: structural
+      check: |
+        decision_class in [D5, D6] AND verdict == auto_execute
+        OR reversibility in [R3, R4] AND no human approval gate
+    remediation: Mandatory human approval. Override = doctrine violation.
+
+# ============================================================================
+# MAJOR — DRIFTS FROM CORE PRINCIPLE OR FRAMEWORK (review required)
+# ============================================================================
+
+  - id: MAJ-001
+    name: partial_capability_shipment
+    principle_ref: §5.14
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Capability claimed shipped (status: ✅) but missing one of:
+          - schema (Prisma model / SQL DDL / Pydantic class)
+          - API (route handler / endpoint)
+          - UI (page / component)
+      reference_file: CAPABILITY_AUDIT.md (if present)
+    remediation: "Mark scaffolded until all 3 layers present. Phase gate §5.14."
+
+  - id: MAJ-002
+    name: complexity_without_leverage
+    principle_ref: §3.6, §4
+    severity: major
+    scope: [decision, markdown]
+    detection:
+      type: field_value
+      check: execution_drag > 3 AND compounding_potential < 2
+    remediation: Reduce coordination burden OR demonstrate flywheel. Otherwise reject design.
+
+  - id: MAJ-003
+    name: short_term_extraction_harms_trust
+    principle_ref: §3.5, §4
+    severity: major
+    scope: [decision, markdown]
+    detection:
+      type: structural
+      check: |
+        Strategic alignment LOW (≤2) AND revenue_impact HIGH (≥4)
+        AND customer_human_benefit LOW (≤2)
+    remediation: Re-score against Ethos #5 (sovereignty/fair compensation). Revise plan.
+
+  - id: MAJ-004
+    name: unaudited_state_change
+    principle_ref: §6, Carmen Beach event-sourcing pattern
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        DB writes outside Job/WorkflowEvent envelope, OR
+        no idempotency_key on retryable operations
+      patterns:
+        - 'prisma\.[a-z]+\.update'
+        - 'prisma\.[a-z]+\.delete'
+        - 'cursor\.execute.*UPDATE'
+    remediation: Wrap in Job + WorkflowEvent. Add idempotency_key.
+
+  - id: MAJ-005
+    name: monorepo_circular_dependency
+    principle_ref: §7
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Package in /packages/* imports from /apps/*
+        OR /apps/web imports from /apps/admin (or vice versa)
+    remediation: Move shared code to packages/. Apps depend on packages, never reverse.
+
+  - id: MAJ-006
+    name: schema_first_violation
+    principle_ref: §5.14, §7
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        UI page exists for entity X, but no schema.prisma / pydantic model defines entity X
+    remediation: Define schema first. Generate types. Then build UI.
+
+  - id: MAJ-007
+    name: rtql_bypass
+    principle_ref: §5.1
+    severity: major
+    scope: [codebase, decision]
+    detection:
+      type: structural
+      check: |
+        Inputs feeding decision engine without rtql_stage/rtql_multiplier annotation
+    remediation: Run RTQL prefilter. Default to qualified (1.0) only if explicitly justified.
+
+  - id: MAJ-008
+    name: codification_overdue
+    principle_ref: §8 (codification trigger)
+    severity: major
+    scope: [codebase, markdown]
+    detection:
+      type: telemetry
+      check: |
+        Same Claude decision type executed >50 times with <5% exception rate
+        AND no Python migration shipped
+    remediation: Migrate to Python. Claude focuses on next ambiguous frontier (§5.8 flywheel).
+
+  - id: MAJ-009
+    name: missing_phase_gate
+    principle_ref: §5.14
+    severity: major
+    scope: [codebase, markdown]
+    detection:
+      type: structural
+      check: |
+        Phase 2 work (AI enrichment, pricing, lead scoring) shipped while
+        Phase 1 has incomplete capabilities (per CAPABILITY_AUDIT.md)
+    remediation: Complete Phase 1 first. No placeholders. Reject shallow scaffolding.
+
+  - id: MAJ-010
+    name: gigent_value_chain_break
+    principle_ref: §5.15
+    severity: major
+    scope: [decision, markdown]
+    detection:
+      type: structural
+      check: |
+        PR/release description names functionality but does NOT name
+        the human super-ability surfaced
+    remediation: Name the super-ability. If you can't, design isn't gigent quality. (§5.15)
+
+  - id: MAJ-011
+    name: dvm_single_axis_optimization
+    principle_ref: §5.10
+    severity: major
+    scope: [decision, markdown]
+    detection:
+      type: structural
+      check: |
+        Initiative scores high on People OR Process OR Tech OR Learning,
+        but ignores or degrades the other three
+    remediation: DVM is multiplicative. Score across all 4 systems before approving.
+
+# ============================================================================
+# MINOR — STYLISTIC / TACTICAL DEVIATION (log and track)
+# ============================================================================
+
+  - id: MIN-001
+    name: typescript_any_usage
+    principle_ref: §2.9, §7
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: regex
+      patterns:
+        - ': any\b'
+        - '<any>'
+        - 'as any'
+    remediation: Tighten types. `_` prefix allowed for intentionally unused.
+
+  - id: MIN-002
+    name: no_test_suite
+    principle_ref: §7
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        package.json has "test" script but no actual test files
+        OR pyproject.toml without pytest config
+    remediation: Add at least smoke tests for golden path.
+
+  - id: MIN-003
+    name: bilingual_missing
+    principle_ref: §5.14, Carmen Beach pattern (EN+ES)
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Customer-facing strings in code but no i18n / EN+ES translations object
+    remediation: Add translations. Latin America markets default EN+ES.
+
+  - id: MIN-004
+    name: missing_health_endpoint
+    principle_ref: §7 (Cloud Run readiness)
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        FastAPI/Express app deployed to Cloud Run without /health or /readiness
+    remediation: Add /health (liveness) and /readiness (deps OK).
+
+  - id: MIN-005
+    name: comment_overuse
+    principle_ref: "Tone preferences (Todd style — minimal comments)"
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: ratio
+      check: |
+        Comment lines / code lines > 0.4 in non-doctrine files
+    remediation: Remove comments that explain WHAT (code shows that). Keep WHY-comments only.
+
+  - id: MIN-006
+    name: clickup_task_no_outcome
+    principle_ref: §1.5, §6
+    severity: minor
+    scope: [clickup_task]
+    detection:
+      type: structural
+      check: |
+        Task has description but no monitoring_metric / success criteria
+    remediation: Add measurable outcome. "Done when X is true."
+
+# ============================================================================
+# INFO — APPROVED EXCEPTIONS / DOCUMENTED OVERRIDES
+# ============================================================================
+
+  - id: INFO-001
+    name: documented_override
+    principle_ref: §11
+    severity: info
+    scope: [codebase, markdown, decision]
+    detection:
+      type: regex
+      patterns:
+        - 'GIGATON_OVERRIDE: [A-Z-]+ approved by'
+        - 'doctrine_exception_id'
+    description: |
+      A known violation that has been formally overridden by governance.
+      Must reference exception_id from doctrine_exceptions/ registry.
+      The scanner LOGS these — does not flag them as drift.
+
+# ============================================================================
+# SOURCE-SPECIFIC ENTRY POINTS
+# ============================================================================
+
+source_routing:
+  local_codebase:
+    root: /Users/admin/Documents/GitHub
+    include_repos:
+      - Carmen-Beach-Properties
+      - decision-engine
+      - gigaton
+      - gigaton-engine
+      - gigaton-ui-system
+      - intelligence-silo
+      - claude_decision_logic_pack
+      - sales-operating-system
+      - master-knowledge-base
+      - braintrust-knowledge-base
+      - transcript-knowledge-base
+      - admin-turtleisland
+      - bella-byte
+      - playa-del-carmen
+    skip_dirs: [node_modules, __pycache__, .git, .next, dist, build, .turbo]
+    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005]
+
+  local_docs:
+    root: /Users/admin/Downloads
+    include_extensions: [.md, .pdf, .docx]
+    rules_applied: [CRIT-002, CRIT-004, CRIT-005, MAJ-003, MAJ-010, MAJ-011, MIN-006]
+
+  github:
+    accounts: [todd-gig]
+    include_archived: false
+    max_age_days: 365
+    rules_applied: [CRIT-003, CRIT-004, CRIT-005, MAJ-001, MAJ-009, MAJ-010, MIN-006]
+    auth: gh CLI (already authenticated as todd-gig)
+
+  google_drive:
+    accounts:
+      - todd@gigaton.ai
+      - todd.cx@turtleisland.solutions
+      - turtleislandsolutions@gmail.com
+      - ti.incontekst@gmail.com
+    rules_applied: [CRIT-002, CRIT-004, CRIT-005, MAJ-003, MAJ-010, MAJ-011]
+    catalog_index: /Users/admin/Documents/GitHub/MD Files/google-drive-intelligence/_MASTER_INDEX.md
+
+  clickup:
+    workspaces: all
+    rules_applied: [CRIT-002, CRIT-004, MIN-006]
+    via: mcp__claude_ai_ClickUp__*
+
+# ============================================================================
+# REPORT CONFIGURATION
+# ============================================================================
+
+report:
+  output_dir: drift_sentinel/reports
+  formats: [json, markdown]
+  group_by: [severity, source, rule_id]
+  fail_threshold: critical  # exit 1 if any critical drift found
+  summary_top_n: 25
