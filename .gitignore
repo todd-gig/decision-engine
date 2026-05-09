@@ -5,6 +5,10 @@ memory/
 __pycache__/
 .pytest_cache/
 
+# Drift sentinel runtime state (do not commit — scan output + binary history)
+drift_sentinel/drift_history.db
+drift_sentinel/reports/
+
 # Environment
 .env
 *.egg-info/

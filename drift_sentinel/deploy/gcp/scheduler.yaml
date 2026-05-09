@@ -1,0 +1,29 @@
+# Cloud Scheduler config — fires Sundays at 08:00 America/Chicago,
+# which triggers the drift-sentinel Cloud Run Job.
+#
+# Apply with:
+#   gcloud scheduler jobs create http drift-sentinel-weekly \
+#     --location=us-central1 \
+#     --schedule="0 8 * * 0" \
+#     --time-zone="America/Chicago" \
+#     --uri="https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/drift-sentinel:run" \
+#     --http-method=POST \
+#     --oauth-service-account-email="$SCHEDULER_SA"
+#
+# $SCHEDULER_SA needs roles/run.invoker on the drift-sentinel job.
+
+name: drift-sentinel-weekly
+schedule: "0 8 * * 0"           # Sundays 08:00
+timeZone: America/Chicago
+description: Weekly Gigaton drift scan — runs the drift-sentinel Cloud Run Job
+
+httpTarget:
+  uri: https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/drift-sentinel:run
+  httpMethod: POST
+  oauthToken:
+    serviceAccountEmail: drift-sentinel-scheduler@PROJECT_ID.iam.gserviceaccount.com
+
+retryConfig:
+  retryCount: 2
+  minBackoffDuration: 60s
+  maxBackoffDuration: 300s
