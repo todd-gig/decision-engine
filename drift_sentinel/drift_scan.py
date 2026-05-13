@@ -738,6 +738,107 @@ def _check_unaudited_state_change(art: Artifact, rule: dict) -> list[Violation]:
     )]
 
 
+def _check_in_memory_state_without_db_writethrough(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-012: module-level dict/list cache mirroring a DB table, where
+    at least one mutation site has no nearby INSERT to that table.
+
+    This is the SIE chat-queue bug class (#198, 2026-05-12). The canonical
+    enqueue path is DB-first, but a parallel chat handler appended only
+    in memory — items vanished on Cloud Run scale-out + revision roll.
+
+    Heuristic: find every module-level `_<name>: dict[str, dict] = {}`
+    (or `list[dict] = []`). If the same file contains `INSERT INTO
+    <basename>`, scan every mutation site for that var. Fire on any
+    mutation site whose enclosing function body has no `INSERT INTO
+    <basename>` and is not inside a `_db_available` fallback branch.
+    Comments are stripped before matching so prose describing missing
+    SQL doesn't accidentally mask the violation.
+    """
+    if art.artifact_type != "code":
+        return []
+    if art.metadata.get("ext") != ".py":
+        return []
+
+    decl_pattern = re.compile(
+        r"^(?P<var>_[a-z][\w]*)\s*:\s*"
+        r"(?:dict\[str,\s*dict\]\s*=\s*\{\}|list\[dict\]\s*=\s*\[\])",
+        re.MULTILINE,
+    )
+    declarations = list(decl_pattern.finditer(art.content))
+    if not declarations:
+        return []
+
+    # Strip Python line comments before pattern matching — comments
+    # mentioning "INSERT INTO <table>" or "_db_available" must not
+    # trick the heuristic into thinking the code does what its comment
+    # talks about. String-literal SQL still survives this scrub.
+    scrubbed_lines: list[str] = []
+    for raw in art.content.split("\n"):
+        idx = raw.find("#")
+        scrubbed_lines.append(raw if idx == -1 else raw[:idx])
+    scrubbed_content = "\n".join(scrubbed_lines)
+    file_lines = scrubbed_lines
+    violations: list[Violation] = []
+
+    for decl in declarations:
+        var = decl.group("var")
+        basename = var.lstrip("_")
+
+        insert_pattern = re.compile(
+            rf"\bINSERT\s+INTO\s+{re.escape(basename)}\b",
+            re.IGNORECASE,
+        )
+        if not insert_pattern.search(scrubbed_content):
+            continue
+
+        mutation_pattern = re.compile(
+            rf"{re.escape(var)}\[\s*[^\]]+\s*\]\s*=",
+        )
+        def_pattern = re.compile(r"^\s*(?:async\s+)?def\s+")
+        for mut in mutation_pattern.finditer(scrubbed_content):
+            mut_line = scrubbed_content[: mut.start()].count("\n") + 1
+
+            # Find the enclosing function bounds: from the most recent
+            # `def` above (any indentation) to the next `def` below.
+            func_start = 0
+            for back_idx in range(mut_line - 2, -1, -1):
+                if def_pattern.match(file_lines[back_idx]):
+                    func_start = back_idx
+                    break
+            func_end = len(file_lines)
+            for fwd_idx in range(mut_line, len(file_lines)):
+                if def_pattern.match(file_lines[fwd_idx]):
+                    func_end = fwd_idx
+                    break
+
+            func_body = "\n".join(file_lines[func_start:func_end])
+            if insert_pattern.search(func_body):
+                continue
+
+            # Skip mutations inside a DB-fallback branch. If the enclosing
+            # function body checks `_db_available`, the in-memory write is
+            # the intentional degraded path.
+            if "_db_available" in func_body:
+                continue
+
+            violations.append(Violation(
+                rule_id=rule["id"],
+                severity=rule["severity"],
+                artifact=art.identifier,
+                location=f"{art.identifier}:{mut_line}",
+                excerpt=(
+                    f"{var} mutated without INSERT INTO {basename} "
+                    f"in the same function body; matching DB table is "
+                    f"written elsewhere in this file"
+                ),
+                suggested_fix=rule.get("remediation", ""),
+            ))
+
+    return violations
+
+
 def _check_monorepo_circular_dep(art: Artifact, rule: dict) -> list[Violation]:
     """MAJ-005: package importing from app, or app importing from sibling app."""
     if art.metadata.get("ext") not in {".ts", ".tsx", ".js", ".jsx"}:
@@ -1177,6 +1278,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-001": _check_capability_without_telemetry,
     "MAJ-004": _check_unaudited_state_change,
     "MAJ-005": _check_monorepo_circular_dep,
+    "MAJ-012": _check_in_memory_state_without_db_writethrough,
     "MAJ-006": _check_schema_without_migration,
     "MAJ-009": _check_phase_gate_violation,
     "MAJ-010": _check_value_chain_break,
