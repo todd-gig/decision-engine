@@ -293,6 +293,37 @@ rules:
         but ignores or degrades the other three
     remediation: DVM is multiplicative. Score across all 4 systems before approving.
 
+  - id: MAJ-012
+    name: in_memory_state_without_db_writethrough
+    principle_ref: §6, Carmen Beach event-sourcing pattern
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Module-level `_<name>: dict[str, dict] = {}` (or list[dict]) where
+        the same file ALSO contains `INSERT INTO <name>` SQL, but at least
+        one mutation site for the dict has no INSERT to that table within
+        a ±30-line window. This is the SIE chat-queue bug class
+        (#198, 2026-05-12): the canonical write path is DB-first but a
+        parallel handler appends only in memory, causing items to vanish
+        on Cloud Run scale-out or revision roll.
+      patterns:
+        - '^_[a-z][\w]*\s*:\s*dict\[str,\s*dict\]\s*=\s*\{\}'
+        - '^_[a-z][\w]*\s*:\s*list\[dict\]\s*=\s*\[\]'
+      negative_signal: |
+        For each module-level dict/list declaration above, if the file
+        also contains `INSERT INTO <basename>` AND any mutation site for
+        the dict has no `INSERT INTO <basename>` in the same function
+        body (and is not in a `_db_available` fallback branch), fire on
+        that mutation site. Comments are stripped before matching.
+    remediation: |
+      DB is the source of truth. Every mutation site for a module-level
+      cache that mirrors a DB table must pair the in-memory write with
+      an INSERT (or UPDATE) inside the same function. See operator-api
+      enqueue_decision (canonical pattern) and _intel_enqueue_proposed_
+      actions (post-#198 fix) for two examples.
+
 # ============================================================================
 # MINOR — STYLISTIC / TACTICAL DEVIATION (log and track)
 # ============================================================================
