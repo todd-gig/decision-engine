@@ -5,9 +5,14 @@ updates memory files, and adjusts decision weights over time.
 
 Fact extraction uses Claude when ANTHROPIC_API_KEY is set, falling back to
 heuristic regex extraction so the system works in offline/air-gapped contexts.
+
+Runtime governance: every LLM call carries provider, model, prompt_version,
+and schema_version, and is wrapped by `_invoke_llm` which emits an audit
+record (per Gigaton Canonical First Principles §6).
 """
 
 from __future__ import annotations
+import logging
 import os
 import re
 import uuid
@@ -25,6 +30,12 @@ except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
 _anthropic_client: "Any | None" = None
+_audit_log = logging.getLogger("decision_engine.llm_audit")
+
+PROVIDER = "anthropic"
+DEFAULT_MODEL = "claude-opus-4-6"
+PROMPT_VERSION_FACT_EXTRACT = "fact_extract.v1.0"
+SCHEMA_VERSION_FACT_EXTRACT = "facts_array.v1"
 
 
 def _get_anthropic_client() -> "Any":
@@ -38,6 +49,34 @@ def _get_anthropic_client() -> "Any":
 
 def _claude_available() -> bool:
     return _ANTHROPIC_AVAILABLE and bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _invoke_llm(
+    *,
+    provider: str,
+    model: str,
+    prompt: str,
+    prompt_version: str,
+    schema_version: str,
+    max_tokens: int = 512,
+) -> str:
+    """Provider-agnostic LLM invocation with mandatory audit envelope."""
+    if provider != "anthropic":
+        raise NotImplementedError(f"Provider {provider!r} not wired yet")
+    client = _get_anthropic_client()
+    message = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = message.content[0].text if message.content else ""
+    _audit_log.info(
+        "llm_call provider=%s model=%s prompt_version=%s schema_version=%s "
+        "in_chars=%d out_chars=%d",
+        provider, model, prompt_version, schema_version,
+        len(prompt), len(text),
+    )
+    return text
 
 
 @dataclass
@@ -193,7 +232,6 @@ class LearningAgent:
     def _extract_facts_claude(self, text: str) -> list[str]:
         """Use Claude to extract structured facts from human agent input."""
         try:
-            client = _get_anthropic_client()
             prompt = (
                 "Extract the discrete, actionable facts from this human agent input. "
                 "Return ONLY a JSON array of strings — each string is one fact. "
@@ -202,13 +240,15 @@ class LearningAgent:
                 f"INPUT:\n{text}\n\n"
                 "Return ONLY a JSON array like: [\"fact 1\", \"fact 2\"]"
             )
-            message = client.messages.create(
-                model="claude-opus-4-6",
+            raw = _invoke_llm(
+                provider=PROVIDER,
+                model=DEFAULT_MODEL,
+                prompt=prompt,
+                prompt_version=PROMPT_VERSION_FACT_EXTRACT,
+                schema_version=SCHEMA_VERSION_FACT_EXTRACT,
                 max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
             )
-            raw = message.content[0].text if message.content else "[]"
-            match = re.search(r"\[[\s\S]*\]", raw)
+            match = re.search(r"\[[\s\S]*\]", raw or "[]")
             if match:
                 import json
                 facts = json.loads(match.group(0))
