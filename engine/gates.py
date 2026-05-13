@@ -1,5 +1,5 @@
 """
-7-Gate Autonomous Execution Authorization System
+8-Gate Autonomous Execution Authorization System
 
 Gate sequence:
     1. Doctrine Check — no non-negotiable violations
@@ -9,16 +9,27 @@ Gate sequence:
     5. Risk Containment Check — downside bounded, rollback exists
     6. Approval Routing — required approvals present or not needed
     7. Monitoring Configuration — monitoring hooks and review date exist
+    8. Drift Sentinel Check — no open critical drift findings touch this
+                              decision's domain (closes the recursive
+                              self-governance loop with drift_sentinel)
 
-If all 7 gates pass → AUTO_EXECUTE
-If gates 1-5 pass but 6-7 fail → ESCALATE with tier routing
-If any gate 1-5 fails → BLOCK or ESCALATE based on severity
+If all 8 gates pass → AUTO_EXECUTE
+If gates 1-3 or 8 fail → BLOCK (structural)
+If gates 4-7 fail → ESCALATE with tier routing
 
 3-Tier Escalation:
     Tier 1 (4hr SLA): owner + stakeholder
     Tier 2 (1-day SLA): functional leader + exec
     Tier 3 (3-day SLA): C-level + board
 """
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
 
 from .models import (
     DecisionObject, DecisionClass, ReversibilityTag, TrustTier,
@@ -254,7 +265,148 @@ def determine_escalation_tier(decision: DecisionObject,
 
 
 # ─────────────────────────────────────────────
-# 7-GATE AUTHORIZATION ORCHESTRATOR
+# GATE 8: DRIFT SENTINEL CHECK (recursive self-governance)
+# ─────────────────────────────────────────────
+
+def _default_drift_db_path() -> Optional[Path]:
+    """Locate drift_history.db relative to this engine's repo."""
+    here = Path(__file__).resolve().parent.parent  # decision-engine/
+    candidate = here / "drift_sentinel" / "drift_history.db"
+    return candidate if candidate.exists() else None
+
+
+_DOMAIN_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "into",
+    "ensure", "verify", "fix", "add", "update", "remove", "implement",
+    "decision", "action", "trigger", "review", "approval", "owner",
+    "context", "stakeholders", "constraints", "evidence", "assumptions",
+    "monitoring", "rollback", "execution", "approve", "should", "must",
+}
+
+
+def _extract_domain_tokens(decision: DecisionObject) -> set[str]:
+    """Extract repo / file / module tokens from decision payload."""
+    tokens: set[str] = set()
+    # evidence_refs are the strongest signal — paths or file:line
+    for ref in decision.evidence_refs:
+        for chunk in re.split(r"[/\s:#]", ref):
+            chunk = chunk.strip(".:#").lower()
+            if len(chunk) > 2 and chunk not in _DOMAIN_STOPWORDS:
+                tokens.add(chunk)
+    # Action / title / problem text — broader but useful for repo/module names
+    for text in (decision.requested_action, decision.title,
+                 decision.problem_statement):
+        for word in re.findall(r"[\w][\w./-]*", text or ""):
+            w = word.lower().strip(".-/")
+            if "/" in w or "." in w or "-" in w or len(w) > 4:
+                if w not in _DOMAIN_STOPWORDS:
+                    tokens.add(w)
+    # Stakeholders sometimes name domains/teams
+    for s in decision.stakeholders:
+        sl = s.lower().strip()
+        if sl and sl not in _DOMAIN_STOPWORDS:
+            tokens.add(sl)
+    return tokens
+
+
+def _acknowledged_rule_ids(decision: DecisionObject) -> set[str]:
+    """A decision that mentions a rule_id (CRIT-XXX, MAJ-XXX, MIN-XXX) is
+    treated as acknowledging / remediating that rule — the gate skips its
+    findings to avoid the chicken-and-egg of fixing drift via decisions."""
+    text = " ".join(filter(None, [
+        decision.title, decision.problem_statement,
+        decision.requested_action, decision.execution_plan,
+        " ".join(decision.assumptions or []),
+        " ".join(decision.constraints or []),
+    ]))
+    return set(m.group(0).upper()
+               for m in re.finditer(r"\b(?:CRIT|MAJ|MIN|INFO)-\d{3}\b",
+                                    text, re.IGNORECASE))
+
+
+def _query_critical_drift(
+    db_path: Path,
+    tokens: set[str],
+    acknowledged: set[str],
+    lookback_days: int,
+) -> list[tuple[str, str]]:
+    """Return [(rule_id, artifact)] for unresolved critical violations
+    from the most-recent scan whose artifact intersects `tokens` and
+    whose rule_id is not in `acknowledged`."""
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=lookback_days)).isoformat()
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Use only the most recent scan to avoid reporting resolved drift
+        cur = conn.execute("""
+            SELECT scan_id FROM scans
+            WHERE timestamp > ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, (cutoff,))
+        latest = cur.fetchone()
+        if not latest:
+            conn.close()
+            return []
+        scan_id = latest[0]
+        cur = conn.execute("""
+            SELECT DISTINCT rule_id, artifact
+            FROM violations
+            WHERE scan_id = ? AND severity = 'critical'
+        """, (scan_id,))
+        rows = cur.fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    matches: list[tuple[str, str]] = []
+    for rule_id, artifact in rows:
+        if rule_id.upper() in acknowledged:
+            continue
+        artifact_lower = (artifact or "").lower()
+        if any(t in artifact_lower for t in tokens):
+            matches.append((rule_id, artifact))
+    return matches
+
+
+def gate_8_drift_check(
+    decision: DecisionObject,
+    drift_db_path: Optional[Path] = None,
+    lookback_days: int = 30,
+) -> tuple[bool, str]:
+    """Gate 8: No open critical drift touches this decision's domain.
+
+    Recursive self-governance — closes the loop between drift_sentinel
+    findings and the 7-gate authorization. A decision that targets a
+    domain with unresolved critical drift cannot AUTO_EXECUTE.
+
+    Acknowledgment escape hatch: if the decision text references the
+    rule_id (e.g., 'CRIT-008', 'MAJ-005'), the gate treats that rule
+    as being remediated and skips its findings.
+    """
+    db_path = drift_db_path or _default_drift_db_path()
+    if db_path is None or not Path(db_path).exists():
+        return True, "Drift history unavailable — gate skipped (warning)"
+    tokens = _extract_domain_tokens(decision)
+    if not tokens:
+        return True, "Decision has no domain tokens to check"
+    acknowledged = _acknowledged_rule_ids(decision)
+    matches = _query_critical_drift(
+        db_path, tokens, acknowledged, lookback_days)
+    if not matches:
+        msg = "No open critical drift touches this domain"
+        if acknowledged:
+            msg += f" (acknowledged: {sorted(acknowledged)})"
+        return True, msg
+    sample = ", ".join(f"{r}@{a.split('/')[-1]}" for r, a in matches[:3])
+    suffix = f" (+{len(matches) - 3} more)" if len(matches) > 3 else ""
+    return False, (
+        f"{len(matches)} critical drift findings touch this domain: "
+        f"{sample}{suffix}. Acknowledge by referencing the rule_id "
+        "in problem_statement / requested_action / execution_plan."
+    )
+
+
+# ─────────────────────────────────────────────
+# 8-GATE AUTHORIZATION ORCHESTRATOR
 # ─────────────────────────────────────────────
 
 def run_7_gate_authorization(
@@ -263,10 +415,15 @@ def run_7_gate_authorization(
     net_value: int,
     alignment: AlignmentScores,
     certificate_chain: CertificateChain,
+    drift_db_path: Optional[Path] = None,
 ) -> ExecutionPacket:
     """
-    Run all 7 gates sequentially.
+    Run all 8 gates sequentially.
     Returns an ExecutionPacket with verdict, gate results, and escalation routing.
+
+    Note: function name kept as `run_7_gate_authorization` for callsite
+    compatibility; gate 8 (drift_check) is added at the end and treated
+    as structural (failure → BLOCK).
     """
     packet = ExecutionPacket(
         decision_id=decision.decision_id,
@@ -290,6 +447,8 @@ def run_7_gate_authorization(
         ("gate_5_risk_containment", lambda: gate_5_risk_containment(decision)),
         ("gate_6_approval_routing", lambda: gate_6_approval_routing(decision, trust_tier)),
         ("gate_7_monitoring", lambda: gate_7_monitoring(decision)),
+        ("gate_8_drift_check",
+         lambda: gate_8_drift_check(decision, drift_db_path)),
     ]
 
     for gate_name, gate_fn in gates:
@@ -309,9 +468,12 @@ def run_7_gate_authorization(
         packet.verdict = ExecutionVerdict.INFORMATION_ONLY
         return packet
 
-    # Gates 1-3 are structural — any failure = BLOCK
+    # Gates 1-3 + 8 are structural — any failure = BLOCK
+    # (Gate 8 is structural because unresolved critical drift in the
+    # decision's domain means the doctrine baseline isn't met)
     structural_failures = [g for g in failed_gates if g in (
-        "gate_1_doctrine", "gate_2_trust_tier", "gate_3_value_threshold"
+        "gate_1_doctrine", "gate_2_trust_tier", "gate_3_value_threshold",
+        "gate_8_drift_check",
     )]
     if structural_failures:
         packet.verdict = ExecutionVerdict.BLOCK
