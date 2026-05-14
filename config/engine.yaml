@@ -101,6 +101,17 @@ authority_matrix:
     executor: Human_CEO
     required_approval: Human_CEO
 
+# OVS-Calibration variance metric kind registry.
+# Maps metric name -> 'proportional' | 'absolute'. Anything not listed falls
+# back to keyword inference in engine/ovs_calibration/variance.py.
+variance_metric_kinds:
+  revenue.daily: proportional
+  occupancy.weekly: proportional
+  conversion.lead_to_close: proportional
+  nps.weekly: absolute
+  incidents.weekly: absolute
+  latency_ms.p95: absolute
+
 valid_transitions:
   draft: [qualified, execution_cleared]
   qualified: [value_confirmed, draft]
