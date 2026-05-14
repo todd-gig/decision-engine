@@ -1425,6 +1425,37 @@ def penrose_scoreboard_metric(metric: str, window_days: Optional[int] = None):
     return getattr(sb, metric)()
 
 
+@router.get("/v1/penrose/revenue/touch-rate")
+def penrose_revenue_touch_rate(window_days: int = 90):
+    """Per-entity Revenue per Human-Touch breakdown.
+
+    GET (read-only). Returns one row per known entity (Carmen Beach,
+    Ti Solutions, Gigaton-UI) with revenue_usd, touches, and the
+    resulting ratio, so the Founder UI can show a per-entity panel
+    next to the aggregate scoreboard metric #7.
+
+    Revenue side reads `outcome_events` filtered to the `revenue.%`
+    metric family. Touch side reads `human_overrides.source_engine`
+    mapped to canonical entities. Codification certificates are
+    pooled (ecosystem-wide, not entity-attributable yet); see
+    `codification_touches_pooled` in the response.
+
+    Per Non-Negotiable #6, no synthesis: an entity with zero revenue
+    events + zero overrides returns `value=null` with an explanatory
+    note.
+
+    penrose_signal: weakens
+    penrose_dimension: revenue_per_human_touch
+    """
+    if window_days < 1 or window_days > 365:
+        raise HTTPException(
+            status_code=422,
+            detail="window_days must be between 1 and 365",
+        )
+    from engine.penrose import revenue_per_touch_by_entity
+    return revenue_per_touch_by_entity(window_days=window_days)
+
+
 @router.post("/v1/penrose/network-value/record", status_code=202)
 def penrose_network_value_record(payload: NetworkValueRecordRequest):
     """Receive one (participant, state_vector, timestamp) BFT observation.
