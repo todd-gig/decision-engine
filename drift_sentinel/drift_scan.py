@@ -1266,6 +1266,173 @@ def _check_value_chain_break(art: Artifact, rule: dict) -> list[Violation]:
     return out
 
 
+def _check_env_mutation_in_request_handler(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """CRIT-011: `os.environ[...] = ...` (or .update/.__setitem__) inside a
+    function whose decorators register it as a FastAPI route handler.
+
+    Documented bug class: SIE PR `fix/llm-secret-ref-param` (2026-05-14)
+    removed `os.environ[KEY] = secret_ref` from `_intel_call_one_provider`
+    after cross-user credential contamination was discovered under
+    concurrent request load. `os.environ` is process-global; concurrent
+    FastAPI handlers writing to it can swap one user's credential
+    reference into a second user's call before the second handler reads
+    it.
+
+    Heuristic (v0 — direct-decorator only):
+      1. Find each os.environ mutation site (assignment, .update, or
+         .__setitem__ — NOT .get / .pop / `in os.environ`).
+      2. Walk backward to the enclosing `def`/`async def`.
+      3. Inspect decorators on the def line and the ±10 lines above.
+      4. Fire if any decorator matches FastAPI route patterns:
+         @app.<verb>, @router.<verb>, @<name>.<verb> where verb is
+         one of get/post/put/patch/delete/options/head.
+      5. Skip when the mutation is INSIDE a `# noqa: CRIT-011` line
+         (explicit override).
+
+    Transitive callers (handler → helper → env-mutation) are out of v0
+    scope; if the rule misses a future variant, that case will be added.
+    """
+    if art.artifact_type != "code":
+        return []
+    if art.metadata.get("ext") != ".py":
+        return []
+
+    # 1. Find all mutation sites.
+    mutation_pattern = re.compile(
+        r"os\.environ\s*(?:\[\s*[^\]]+\s*\]\s*=(?!=)"
+        r"|\.update\s*\("
+        r"|\.__setitem__\s*\()"
+    )
+    matches = list(mutation_pattern.finditer(art.content))
+    if not matches:
+        return []
+
+    # 2. Index lines for backward def-scan + decorator inspection.
+    lines = art.content.split("\n")
+    def_pattern = re.compile(r"^(?P<indent>\s*)(?:async\s+)?def\s+")
+    route_decorator_pattern = re.compile(
+        r"^\s*@[\w\.]+\.(?:get|post|put|patch|delete|options|head)\s*\(",
+    )
+    # Also support `@<verb>(` shape (rare, but used in some frameworks).
+    bare_route_pattern = re.compile(
+        r"^\s*@(?:get|post|put|patch|delete|options|head)\s*\(",
+    )
+
+    violations: list[Violation] = []
+    for mut in matches:
+        mut_line_no = art.content[: mut.start()].count("\n") + 1
+        # Allow explicit override on the same line.
+        if "noqa: CRIT-011" in lines[mut_line_no - 1]:
+            continue
+
+        # Walk back to the enclosing def. Skip nested defs by tracking
+        # indentation — but for v0 we accept the most-recent def above
+        # the mutation regardless of indent (handlers are top-level).
+        enclosing_def_idx: int | None = None
+        for back_idx in range(mut_line_no - 2, -1, -1):
+            if def_pattern.match(lines[back_idx]):
+                enclosing_def_idx = back_idx
+                break
+        if enclosing_def_idx is None:
+            # Mutation at module scope (e.g. test setup) — out of scope.
+            continue
+
+        # Inspect the 10 lines above the def for a routing decorator.
+        decorator_window_start = max(0, enclosing_def_idx - 10)
+        decorator_block = lines[decorator_window_start:enclosing_def_idx]
+        has_route_decorator = any(
+            route_decorator_pattern.match(line)
+            or bare_route_pattern.match(line)
+            for line in decorator_block
+        )
+        if not has_route_decorator:
+            continue
+
+        excerpt = lines[mut_line_no - 1].strip()[:120]
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{mut_line_no}",
+            excerpt=(
+                f"os.environ mutation inside FastAPI route handler: "
+                f"{excerpt}"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+def _check_cloud_run_max_instances_above_one(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MIN-009: Cloud Run service config with --max-instances > 1.
+
+    Several v0 designs assume single-instance correctness: SecretStore
+    cache (PR #208, process-local), in-memory rate-limiter state,
+    scheduler leader-election. Lifting --max-instances above 1 before
+    v1 cross-instance work ships introduces silent correctness bugs.
+
+    Detects:
+      - `--max-instances=N` or `--max-instances N` (gcloud CLI) where N>1
+      - `maxScale: "N"` annotation (Knative service) where N>1
+      - `max_instances: N` / `maxScale: N` config fields where N>1
+
+    Skips:
+      - N <= 1
+      - Absence of the flag (Cloud Run default is irrelevant — this rule
+        only fires when an operator EXPLICITLY raises the cap).
+      - Lines with `# noqa: MIN-009` override.
+    """
+    ext = art.metadata.get("ext")
+    if ext not in {".yaml", ".yml", ".sh", ".md", ".py"}:
+        return []
+
+    patterns = [
+        # gcloud CLI flag — covers `--max-instances=5` and `--max-instances 5`
+        re.compile(r"--max-instances[=\s]+(\d+)"),
+        # Knative-style maxScale annotation: `maxScale: "5"` or `maxScale: '5'`
+        re.compile(r"maxScale\s*:\s*['\"]?(\d+)['\"]?"),
+        # Config field: `max_instances: 5` / `max_instances=5`
+        re.compile(r"\bmax_instances\s*[:=]\s*(\d+)"),
+    ]
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for pat in patterns:
+        for m in pat.finditer(art.content):
+            try:
+                n = int(m.group(1))
+            except (ValueError, IndexError):
+                continue
+            if n <= 1:
+                continue
+            line_no = art.content[: m.start()].count("\n") + 1
+            if line_no in seen_lines:
+                continue
+            if "noqa: MIN-009" in lines[line_no - 1]:
+                continue
+            seen_lines.add(line_no)
+            violations.append(Violation(
+                rule_id=rule["id"],
+                severity=rule["severity"],
+                artifact=art.identifier,
+                location=f"{art.identifier}:{line_no}",
+                excerpt=(
+                    f"Cloud Run scale cap raised to {n} — triggers v1 "
+                    f"cross-instance follow-up review"
+                ),
+                suggested_fix=rule.get("remediation", ""),
+            ))
+
+    return violations
+
+
 # Map rule.id → custom structural handler (for rules that need bespoke logic)
 STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "CRIT-001": _check_automation_without_override,
@@ -1275,6 +1442,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "CRIT-006": _check_action_without_qualification,
     "CRIT-007": _check_provider_lock_in,
     "CRIT-008": _check_fake_market_data,
+    "CRIT-011": _check_env_mutation_in_request_handler,
     "MAJ-001": _check_capability_without_telemetry,
     "MAJ-004": _check_unaudited_state_change,
     "MAJ-005": _check_monorepo_circular_dep,
@@ -1283,6 +1451,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-009": _check_phase_gate_violation,
     "MAJ-010": _check_value_chain_break,
     "MIN-001": _check_typescript_any,
+    "MIN-009": _check_cloud_run_max_instances_above_one,
 }
 
 
