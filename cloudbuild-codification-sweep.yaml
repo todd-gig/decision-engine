@@ -1,0 +1,144 @@
+# cloudbuild-codification-sweep.yaml
+#
+# Cloud Run Job that hits the deployed decision-engine's codification
+# sweep endpoint daily. This is the v0.6 closure of the codification
+# flywheel — Cloud Scheduler triggers this job, the job POSTs to the
+# engine, the engine runs analyzer + readiness + (opt-in) LLM proposer
+# + simulator, and returns a SweepReport.
+#
+# Why a separate cloudbuild file (rather than extending the main
+# cloudbuild.yaml): the sweep job has different deploy mechanics
+# (Cloud Run Job, not Service) and different IAM (service-account
+# OIDC token for /v1/codification/sweep). Keeping the files separate
+# keeps blast radius scoped — re-deploying the sweep job never
+# rolls the production decision-engine service.
+#
+# Schedule: daily 03:00 America/Chicago (= 08:00 UTC CST / 09:00 UTC CDT).
+# Matches the cadence pattern HME's weekly initiative report uses
+# (engine/hme_event_emitter.py) and the doctrine recommendation in
+# codification_engine_spec.md §Detection pipeline.
+#
+# One-time Cloud Scheduler setup (run once per project / region):
+#
+#     PROJECT_ID=gigaton-platform
+#     REGION=us-central1
+#     SERVICE_URL=$(gcloud run services describe decision-engine \
+#         --region=$REGION --format='value(status.url)')
+#     SA_EMAIL=codification-sweep-invoker@$PROJECT_ID.iam.gserviceaccount.com
+#
+#     # Create the invoker service account if it doesn't exist:
+#     gcloud iam service-accounts create codification-sweep-invoker \
+#         --display-name="Codification Sweep Invoker" \
+#         --project=$PROJECT_ID
+#
+#     # Grant it run.invoker on the decision-engine service:
+#     gcloud run services add-iam-policy-binding decision-engine \
+#         --region=$REGION \
+#         --member="serviceAccount:$SA_EMAIL" \
+#         --role="roles/run.invoker" \
+#         --project=$PROJECT_ID
+#
+#     # Create the scheduler job:
+#     gcloud scheduler jobs create http codification-sweep-daily \
+#         --location=$REGION \
+#         --schedule="0 3 * * *" \
+#         --time-zone="America/Chicago" \
+#         --uri="$SERVICE_URL/v1/codification/sweep" \
+#         --http-method=POST \
+#         --headers="Content-Type=application/json" \
+#         --message-body='{"min_volume":50,"score_threshold":0.7,"open_proposals":true,"why":"daily scheduled sweep","proposer_enabled":false,"proposer_top_n":5}' \
+#         --oidc-service-account-email=$SA_EMAIL \
+#         --oidc-token-audience="$SERVICE_URL" \
+#         --project=$PROJECT_ID
+#
+# To enable the v0.6 LLM proposer + simulator inside the sweep, flip
+# `proposer_enabled` to true in the --message-body (or set
+# CODIFICATION_PROPOSER_ENABLED=1 on the decision-engine service).
+#
+# This cloudbuild.yaml builds + redeploys an alternative
+# "sweep-trigger" Cloud Run Job that operators can invoke from
+# Cloud Console manually (in addition to the Scheduler-driven path).
+# Useful for backfills and pre-deploy verification.
+
+steps:
+  # Build the trigger image (re-uses the decision-engine Dockerfile;
+  # only the entrypoint differs).
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/codification-sweep-trigger:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/codification-sweep-trigger:latest'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/codification-sweep-trigger:$COMMIT_SHA']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/codification-sweep-trigger:latest']
+
+  # Deploy as a Cloud Run Job. Each invocation runs the CLI
+  # `codification-sweep` subcommand once and exits.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - codification-sweep-job
+      - '--image=gcr.io/$PROJECT_ID/codification-sweep-trigger:$COMMIT_SHA'
+      - '--region=us-central1'
+      - '--command=python'
+      - '--args=cli.py,codification-sweep'
+      - '--max-retries=1'
+      - '--task-timeout=900'
+      - '--cpu=1'
+      - '--memory=512Mi'
+      - '--set-env-vars=CODIFICATION_PROPOSER_ENABLED=false'
+
+  # Create / update the Cloud Scheduler job that triggers the
+  # HTTP sweep endpoint daily. Idempotent — `--update` falls back
+  # to create when the job doesn't yet exist via gcloud's
+  # scheduler-jobs-update-http behavior.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        SERVICE_URL=$(gcloud run services describe decision-engine \
+          --region=us-central1 --format='value(status.url)' || echo "")
+        if [ -z "$SERVICE_URL" ]; then
+          echo "decision-engine service not deployed; skipping scheduler wiring"
+          exit 0
+        fi
+        SA_EMAIL=codification-sweep-invoker@$PROJECT_ID.iam.gserviceaccount.com
+        gcloud scheduler jobs update http codification-sweep-daily \
+          --location=us-central1 \
+          --schedule="0 3 * * *" \
+          --time-zone="America/Chicago" \
+          --uri="$SERVICE_URL/v1/codification/sweep" \
+          --http-method=POST \
+          --headers="Content-Type=application/json" \
+          --message-body='{"min_volume":50,"score_threshold":0.7,"open_proposals":true,"why":"daily scheduled sweep","proposer_enabled":false,"proposer_top_n":5}' \
+          --oidc-service-account-email="$SA_EMAIL" \
+          --oidc-token-audience="$SERVICE_URL" \
+          --project=$PROJECT_ID \
+        || gcloud scheduler jobs create http codification-sweep-daily \
+          --location=us-central1 \
+          --schedule="0 3 * * *" \
+          --time-zone="America/Chicago" \
+          --uri="$SERVICE_URL/v1/codification/sweep" \
+          --http-method=POST \
+          --headers="Content-Type=application/json" \
+          --message-body='{"min_volume":50,"score_threshold":0.7,"open_proposals":true,"why":"daily scheduled sweep","proposer_enabled":false,"proposer_top_n":5}' \
+          --oidc-service-account-email="$SA_EMAIL" \
+          --oidc-token-audience="$SERVICE_URL" \
+          --project=$PROJECT_ID
+
+images:
+  - 'gcr.io/$PROJECT_ID/codification-sweep-trigger:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/codification-sweep-trigger:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

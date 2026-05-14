@@ -284,6 +284,27 @@ class SweepRunRequest(BaseModel):
     proposals_db_path: Optional[str] = None
     open_proposals: bool = True
     why: str = Field(default="scheduled codification sweep")
+    # v0.6 — opt-in LLM proposer + simulator. Defaults None → resolved
+    # from CODIFICATION_PROPOSER_ENABLED env (default off).
+    proposer_enabled: Optional[bool] = None
+    proposer_top_n: int = Field(default=5, ge=0, le=50)
+
+
+class ModuleProposeRequest(BaseModel):
+    """POST /v1/codification/propose/{proposal_id} — draft a Python module."""
+    provider: str = Field(default="anthropic", min_length=1, max_length=32)
+    model: str = Field(default="claude-3-5-sonnet", min_length=1, max_length=128)
+    evidence_ids: Optional[list[str]] = None       # override stored evidence
+    certificate_id: Optional[str] = None           # bind a signed cert
+    decision_class: str = Field(default="new-module", min_length=1)
+
+
+class ModuleSimulateRequest(BaseModel):
+    """POST /v1/codification/simulate/{proposal_id} — replay a module proposal."""
+    module_proposal_id: str = Field(..., min_length=1)
+    evidence_decision_ids: list[str] = Field(default_factory=list)
+    audit_db_path: Optional[str] = None
+    divergence_ceiling: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 class ProposalApproveAndCertifyRequest(BaseModel):
