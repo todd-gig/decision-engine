@@ -269,15 +269,22 @@ def process_decision(
     try:
         from engine.hme_event_emitter import (
             emit_decision_event,
-            emit_initiative_webhook,
+            emit_inferred_transition,
             infer_initiative_id,
         )
 
-        _verdict_str = (
-            exec_packet.verdict.value
-            if hasattr(exec_packet.verdict, "value")
-            else str(exec_packet.verdict)
-        )
+        # Verdict normalization: ExecutionVerdict.AUTO_EXECUTE.value == "auto_execute"
+        # (lowercase per the enum definition in engine/models.py:85). The
+        # emitters key on the UPPERCASE form ("AUTO_EXECUTE" / "ESCALATE_TIER_1"
+        # etc., matching their _VERDICT_TO_EVENT_TYPE dict). Without .upper(),
+        # the gamification + webhook emissions silently no-op'd in production —
+        # uncovered + fixed in this PR. Use enum .name when possible (always
+        # uppercase) and fall back to a normalized string for safety.
+        _verdict_raw = exec_packet.verdict
+        if hasattr(_verdict_raw, "name"):
+            _verdict_str = _verdict_raw.name  # ExecutionVerdict.AUTO_EXECUTE → "AUTO_EXECUTE"
+        else:
+            _verdict_str = str(_verdict_raw).upper()
         _decision_id = str(getattr(decision, "decision_id", "") or "")
         _action = getattr(decision, "requested_action", None)
         _title = getattr(decision, "title", None)
@@ -293,10 +300,17 @@ def process_decision(
             requested_action=_action,
         )
 
+        # On AUTO_EXECUTE: also auto-advance the initiative's lifecycle in
+        # HME (closes the agentic loop end-to-end — decision → initiative
+        # advance without manual intervention). Gated by:
+        #   - infer_initiative_id finding a UUID adjacent to "initiative"
+        #     keyword in the decision's action/title/evidence (safe detection)
+        #   - EMIT_INFERRED_TRANSITION env var (default ON; set to "0" to
+        #     suppress just this webhook without affecting gamification)
         if _verdict_str == "AUTO_EXECUTE":
             initiative_id = infer_initiative_id(_action, _title, _evidence)
             if initiative_id is not None:
-                emit_initiative_webhook(
+                emit_inferred_transition(
                     initiative_id=initiative_id,
                     decision_id=_decision_id,
                     to_stage="IN_PROGRESS",
