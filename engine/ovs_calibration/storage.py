@@ -4,7 +4,12 @@ Schema mirrors the OVS-Calibration Engine spec (outcome_calibration_engine_spec.
   - outcome_sources            — registry of outcome ingestion sources
   - outcome_events             — append-only ingested outcome events
   - attribution_links          — many-to-many between decisions and outcomes
+                                 (v0.6: chain_position/chain_root_decision_id/
+                                 chain_terminal/chain_systems_count columns added
+                                 for causal-chain stage)
   - calibration_revisions      — HMAC-signed dimension updates
+  - counterfactual_records     — v0.6 — observable counterfactual scores
+                                 (direct | comparative | temporal kinds)
 
 WHY this file exists: every other module in this sub-package shares one SQLite
 file so the calibration loop can be read end-to-end in a single query. Splitting
@@ -90,19 +95,49 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             attributed_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             attributed_by            TEXT NOT NULL,
             reasoning                TEXT NOT NULL,
+            chain_position           INTEGER NOT NULL DEFAULT 0,
+            chain_root_decision_id   TEXT,
+            chain_terminal           INTEGER NOT NULL DEFAULT 0,
+            chain_systems_count      INTEGER NOT NULL DEFAULT 1,
             schema_version           TEXT NOT NULL DEFAULT 'v1',
             CHECK (attribution_method IN
                 ('direct','temporal','causal-chain','manual')),
             CHECK (layer_number IN (1,2,3,4)),
-            CHECK (confidence >= 0.0 AND confidence <= 1.0)
+            CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            CHECK (chain_position >= 0 AND chain_position <= 4),
+            CHECK (chain_terminal IN (0,1))
         );
         CREATE INDEX IF NOT EXISTS idx_attribution_decision
             ON attribution_links(decision_certificate_id);
         CREATE INDEX IF NOT EXISTS idx_attribution_outcome
             ON attribution_links(outcome_event_id);
+        CREATE INDEX IF NOT EXISTS idx_attribution_chain
+            ON attribution_links(chain_root_decision_id);
         CREATE UNIQUE INDEX IF NOT EXISTS uq_attribution_pair
             ON attribution_links(decision_certificate_id, outcome_event_id,
                                   attribution_method);
+
+        CREATE TABLE IF NOT EXISTS counterfactual_records (
+            id                                  TEXT PRIMARY KEY,
+            rejected_decision_id                TEXT NOT NULL,
+            alternative_chosen_id               TEXT,
+            observed_alternative_outcome_ids    TEXT NOT NULL,  -- JSON array
+            kind                                TEXT NOT NULL,
+            inferred_counterfactual_score       REAL NOT NULL,
+            confidence                          REAL NOT NULL,
+            reasoning                           TEXT NOT NULL,
+            scored_at                           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            scored_by                           TEXT NOT NULL DEFAULT 'system',
+            hmac                                TEXT NOT NULL,
+            evidence_metadata                   TEXT NOT NULL DEFAULT '{}',
+            schema_version                      TEXT NOT NULL DEFAULT 'v1',
+            CHECK (kind IN ('direct','comparative','temporal')),
+            CHECK (confidence >= 0.0 AND confidence <= 1.0)
+        );
+        CREATE INDEX IF NOT EXISTS idx_counterfactual_rejected
+            ON counterfactual_records(rejected_decision_id);
+        CREATE INDEX IF NOT EXISTS idx_counterfactual_kind
+            ON counterfactual_records(kind, scored_at);
 
         CREATE TABLE IF NOT EXISTS calibration_revisions (
             id                          TEXT PRIMARY KEY,
