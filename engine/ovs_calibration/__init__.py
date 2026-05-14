@@ -1,4 +1,4 @@
-"""ovs_calibration — Outcome Variance & Calibration Engine v0.5.
+"""ovs_calibration — Outcome Variance & Calibration Engine v0.6.
 
 Closes the Learning Loop (Framework 5.7) across entities. Outcomes flow IN
 from every entity surface, get attributed to originating decisions, variance
@@ -9,11 +9,27 @@ This sub-package is INTENTIONALLY separate from `engine/ovs_engine.py` (the
 unrelated OVS health-scoring engine). They share a name fragment for
 historical reasons but have no runtime coupling.
 
-v0.5 surface:
+v0.6 surface (delta from v0.5):
+  - attribution         — causal-chain stage is now a real implementation:
+                          walks up to 4 hops along
+                          evidence_certificate_ids / parent_certificate_id;
+                          per-hop confidence × CAUSAL_CHAIN_HOP_DECAY (0.85);
+                          terminal-link cascade uses Framework 5.12 per-system
+                          multiplier.
+  - counterfactual      — NEW: CounterfactualRecord + score_counterfactual()
+                          across direct | comparative | temporal kinds.
+                          NEVER synthesizes speculative cases.
+  - adapters/           — NEW: per-entity Pub/Sub adapters
+                          (CarmenBeachRevenueAdapter,
+                           TiSolutionsConversionAdapter,
+                           GigatonUIUsageAdapter)
+                          subscribed to topic outcomes.<entity>.<metric>.
+
+v0.5 surface (unchanged):
   - sources           — OutcomeSource registry CRUD
   - variance          — compute_variance(decision, outcome) -> VarianceResult
   - attribution       — three-stage attribution (direct + temporal+entity;
-                        causal-chain stub returns [])
+                        causal-chain now real, see v0.6 delta above)
   - revisions         — HMAC-signed CalibrationRevision with DB + MD twin
   - authority         — outcome_weight() + check_calibration_authority()
   - codification_bridge — emit stable-pattern candidates to codification queue
@@ -47,6 +63,9 @@ from .variance import (
 )
 from .attribution import (
     AttributionLink,
+    DecisionResolver,
+    MAX_CAUSAL_CHAIN_HOPS,
+    CAUSAL_CHAIN_HOP_DECAY,
     assign_layer,
     cascade_multiplier_for_layer,
     cascade_multiplier_for_systems,
@@ -57,6 +76,7 @@ from .attribution import (
     persist_link,
     list_links_for_decision,
     list_links_for_outcome,
+    walk_causal_chain,
 )
 from .revisions import (
     CalibrationRevision,
@@ -80,6 +100,15 @@ from .codification_bridge import (
     evaluate_stability,
     emit_candidate,
 )
+from .counterfactual import (
+    CounterfactualRecord,
+    CounterfactualScore,
+    score_counterfactual,
+    persist_record as persist_counterfactual,
+    get_record as get_counterfactual,
+    list_records as list_counterfactuals,
+    verify_record as verify_counterfactual,
+)
 
 __all__ = [
     # sources
@@ -97,6 +126,9 @@ __all__ = [
     "compute_variance",
     # attribution
     "AttributionLink",
+    "DecisionResolver",
+    "MAX_CAUSAL_CHAIN_HOPS",
+    "CAUSAL_CHAIN_HOP_DECAY",
     "assign_layer",
     "cascade_multiplier_for_layer",
     "cascade_multiplier_for_systems",
@@ -107,6 +139,7 @@ __all__ = [
     "persist_link",
     "list_links_for_decision",
     "list_links_for_outcome",
+    "walk_causal_chain",
     # revisions
     "CalibrationRevision",
     "write_revision",
@@ -126,4 +159,12 @@ __all__ = [
     "CodificationEmission",
     "evaluate_stability",
     "emit_candidate",
+    # counterfactual
+    "CounterfactualRecord",
+    "CounterfactualScore",
+    "score_counterfactual",
+    "persist_counterfactual",
+    "get_counterfactual",
+    "list_counterfactuals",
+    "verify_counterfactual",
 ]

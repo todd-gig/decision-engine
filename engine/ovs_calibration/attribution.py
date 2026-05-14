@@ -8,7 +8,12 @@ Three-stage attribution algorithm per spec §Attribution algorithm:
                                horizon-fit + entity-match exactness.
   3. Causal-chain attribution — outcome attributes through a chain (decision A
                                -> output -> input to decision B -> outcome).
-                               v0.5 ships a stub that returns []; full impl in v0.6+.
+                               v0.6 ships real impl: walks up to 4 hops along
+                               `evidence_certificate_ids` / `parent_certificate_id`
+                               references; per-hop confidence multiplies by 0.85;
+                               terminal-link cascade_multiplier uses Framework
+                               5.12's per-system multiplier (1->1.0× / 4->2.2×,
+                               linear interpolation).
 
 Layer assignment per Framework 5.12 (canonical doctrine §5.12):
   Layer 1  (0-7d):    100%   cascade_multiplier = 1.0
@@ -37,10 +42,14 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from . import storage
 from .variance import DecisionCertificateLike, OutcomeEventLike
+
+# A resolver maps a decision_id -> dict carrying chain-walk fields.
+# See `attribute_causal_chain` docstring for the contract.
+DecisionResolver = Callable[[str], Optional[dict]]
 
 
 # ─────────────────────────────────────────────
@@ -64,6 +73,16 @@ LAYER_CASCADE_DECAY = {
 # 1 system = 1.0x, 4 systems = 2.2x; linear interpolation between
 SYSTEMS_CASCADE_MULTIPLIER = {1: 1.0, 2: 1.4, 3: 1.8, 4: 2.2}
 
+# Maximum walk depth for causal-chain attribution. Matches Framework 5.12's
+# 4-layer cap so a chain can never traverse more hops than the doctrine layers.
+MAX_CAUSAL_CHAIN_HOPS = 4
+
+# Per-hop confidence decay along a causal chain. Each hop the link is one step
+# further from the terminal outcome, so confidence multiplies by this factor.
+# Anchored to spec line 70 ("confidence multiplicative through chain") + the
+# v0.6 brief's explicit 0.85 multiplier.
+CAUSAL_CHAIN_HOP_DECAY = 0.85
+
 
 # ─────────────────────────────────────────────
 # Data models
@@ -75,6 +94,19 @@ class AttributionLink:
     """One (decision, outcome) attribution row.
 
     Mirrors the spec §AttributionLink schema (line 43).
+
+    v0.6 chain fields (defaulted to non-chain values for back-compat):
+      - chain_position:        0 for direct/temporal/manual; 1..4 for chain hops.
+                               1 = link directly adjacent to the terminal outcome.
+      - chain_root_decision_id: the decision at the *origin* of the chain
+                               (deepest hop). For non-chain links, equals
+                               decision_certificate_id.
+      - chain_terminal:        True for the link whose decision produced the
+                               outcome directly (hop 1). One terminal per chain.
+      - chain_systems_count:   number of distinct systems traversed by the chain;
+                               drives Framework 5.12 per-systems cascade multiplier.
+                               Stored on every link in the chain so any single row
+                               can be audited without joining.
     """
     decision_certificate_id: str
     outcome_event_id: str
@@ -88,6 +120,10 @@ class AttributionLink:
         default_factory=lambda: datetime.now(tz=timezone.utc).isoformat()
     )
     id: str = field(default_factory=lambda: f"attr-{uuid.uuid4().hex[:12]}")
+    chain_position: int = 0
+    chain_root_decision_id: str = ""
+    chain_terminal: bool = False
+    chain_systems_count: int = 1
     schema_version: str = "v1"
 
     def __post_init__(self) -> None:
@@ -104,6 +140,18 @@ class AttributionLink:
             raise ValueError(f"layer_number must be 1|2|3|4; got {self.layer_number}")
         if not self.reasoning or len(self.reasoning.strip()) < 5:
             raise ValueError("reasoning is required (>=5 chars); always-record-WHY")
+        if not (0 <= self.chain_position <= MAX_CAUSAL_CHAIN_HOPS):
+            raise ValueError(
+                f"chain_position must be in [0,{MAX_CAUSAL_CHAIN_HOPS}]; "
+                f"got {self.chain_position}"
+            )
+        if self.chain_systems_count < 1:
+            raise ValueError(
+                f"chain_systems_count must be >= 1; got {self.chain_systems_count}"
+            )
+        if not self.chain_root_decision_id:
+            # Default: non-chain link → root is self.
+            object.__setattr__(self, "chain_root_decision_id", self.decision_certificate_id)
 
 
 # ─────────────────────────────────────────────
@@ -280,20 +328,154 @@ def attribute_causal_chain(
     outcome: OutcomeEventLike,
     *,
     chain_links: Iterable[dict] | None = None,
+    decision_resolver: "DecisionResolver | None" = None,
     reasoning: str = "",
 ) -> list[AttributionLink]:
-    """Stage 3: causal-chain attribution.
+    """Stage 3: causal-chain attribution (v0.6 — full implementation).
 
-    v0.5 STUB — returns []. Full implementation (decision A -> output -> input
-    to decision B -> outcome) ships in v0.6+ once the upstream causal_mapper
-    surface is wired through.
+    Walks backwards from `outcome` through up to MAX_CAUSAL_CHAIN_HOPS hops of
+    decisions, following each decision's `evidence_certificate_ids` /
+    `parent_certificate_id` references. Each link in the chain produces a
+    distinct AttributionLink row:
 
-    WHY a stub vs an empty function: the signature exists so the daemon's
-    fan-out is set, callers can introspect, and tests can verify it
-    deterministically returns nothing without raising.
+      - chain_position = 1 is the *terminal* link (the decision whose
+        projection directly produced the outcome — this is `decision` itself
+        in the typical caller's case).
+      - chain_position = 2..N are progressively older parents.
+      - confidence at position N = CAUSAL_CHAIN_HOP_DECAY ** (N - 1)
+        (terminal = 1.0, hop 2 = 0.85, hop 3 = 0.7225, hop 4 = 0.614125).
+      - cascade_multiplier on the terminal link uses Framework 5.12's per-
+        systems multiplier; intermediate links carry the per-layer multiplier.
+      - chain_systems_count = count of distinct `chain_link['system']` values
+        observed along the walk (terminal counts as 1 even when its system
+        field is absent).
+
+    Args:
+      decision:        the terminal decision certificate (matches the outcome).
+      outcome:         the outcome event the terminal decision produced.
+      chain_links:     optional pre-walked sequence of dicts, ordered from
+                       hop 2 (parent of terminal) outward. Each dict carries:
+                         { 'decision_certificate_id': str,
+                           'system': str,           # the system that emitted it
+                           'issued_at': str,        # ISO-8601
+                           'projection_metric': str # for reasoning text
+                         }
+                       When `chain_links` is supplied, the function does NOT
+                       re-walk; it just decorates each hop into an
+                       AttributionLink. Callers (the daemon) typically build
+                       this list once from their certificate store.
+      decision_resolver:
+                       optional `(decision_id) -> dict | None` callable used
+                       to walk parents when `chain_links` is None. Signature:
+                         resolver(decision_id) -> {
+                           'decision_certificate_id': str,
+                           'parent_certificate_id': str | None,
+                           'evidence_certificate_ids': list[str],
+                           'system': str,
+                           'issued_at': str,
+                           'projection_metric': str
+                         }
+                       When neither `chain_links` nor `decision_resolver` is
+                       provided, the function returns [] (no chain observable).
+
+    Returns: list of AttributionLink rows, ordered from terminal (position 1)
+             outward. List length is 0 when no chain is observable, 1 when only
+             the terminal hop exists (collapses to a degenerate chain), and up
+             to MAX_CAUSAL_CHAIN_HOPS otherwise.
     """
-    _ = chain_links, reasoning  # signature reserved
-    return []
+    # Step 1 — build the ordered hop list (terminal -> ancestors).
+    hops: list[dict] = []
+    # Hop 1: the terminal decision itself.
+    decision_at = _parse_iso(decision.issued_at) or _now()
+    outcome_at = _parse_iso(outcome.observed_at) or _now()
+    hops.append({
+        "decision_certificate_id": decision.decision_certificate_id,
+        "system": outcome.source or "",
+        "issued_at": decision.issued_at,
+        "projection_metric": decision.projection.metric,
+    })
+
+    if chain_links is not None:
+        for link in chain_links:
+            if len(hops) >= MAX_CAUSAL_CHAIN_HOPS:
+                break
+            hops.append(dict(link))
+    elif decision_resolver is not None:
+        current_id = decision.decision_certificate_id
+        # We never re-add the terminal; walk strictly to ancestors.
+        seen: set[str] = {current_id}
+        while len(hops) < MAX_CAUSAL_CHAIN_HOPS:
+            current = decision_resolver(current_id)
+            if not current:
+                break
+            parent_id = current.get("parent_certificate_id") or ""
+            evidence = current.get("evidence_certificate_ids") or []
+            # Prefer explicit parent; fall back to first evidence cert.
+            next_id = parent_id or (evidence[0] if evidence else "")
+            if not next_id or next_id in seen:
+                break
+            parent = decision_resolver(next_id)
+            if not parent:
+                break
+            hops.append({
+                "decision_certificate_id": next_id,
+                "system": parent.get("system", ""),
+                "issued_at": parent.get("issued_at", ""),
+                "projection_metric": parent.get("projection_metric", ""),
+            })
+            seen.add(next_id)
+            current_id = next_id
+    else:
+        # No chain observable. Return [] — never synthesize hops we can't
+        # evidence (Non-Negotiable #6: evidence over assumption).
+        return []
+
+    if len(hops) <= 1:
+        # Only the terminal decision available; not a real chain. Stage 1/2
+        # already cover the direct case, so return [] to avoid duplication.
+        return []
+
+    # Step 2 — count distinct systems for Framework 5.12 multiplier.
+    distinct_systems = {h.get("system", "") for h in hops if h.get("system")}
+    systems_count = max(1, len(distinct_systems))
+    systems_multiplier = cascade_multiplier_for_systems(systems_count)
+
+    # Step 3 — emit one AttributionLink per hop. Position 1 = terminal.
+    layer = assign_layer(decision_at, outcome_at)
+    layer_decay = cascade_multiplier_for_layer(layer)
+    chain_root_id = hops[-1]["decision_certificate_id"]
+
+    links: list[AttributionLink] = []
+    for position, hop in enumerate(hops, start=1):
+        # Position 1 = terminal hop (closest to outcome) -> confidence 1.0.
+        # Subsequent hops decay multiplicatively.
+        hop_confidence = round(CAUSAL_CHAIN_HOP_DECAY ** (position - 1), 6)
+        is_terminal = position == 1
+        # Terminal link carries the systems-cascade multiplier per F5.12;
+        # ancestor links carry the per-layer decay (their effect on calibration
+        # is already softened by hop_confidence, so we don't double-discount).
+        cascade = systems_multiplier if is_terminal else layer_decay
+        hop_reasoning = reasoning or (
+            f"Causal-chain hop {position}/{len(hops)} "
+            f"(systems={systems_count}, terminal={'yes' if is_terminal else 'no'}): "
+            f"decision {hop['decision_certificate_id']!r} "
+            f"-> outcome {outcome.id!r} "
+            f"via metric {hop.get('projection_metric') or decision.projection.metric!r}"
+        )
+        links.append(AttributionLink(
+            decision_certificate_id=hop["decision_certificate_id"],
+            outcome_event_id=outcome.id,
+            confidence=hop_confidence,
+            attribution_method="causal-chain",
+            layer_number=layer,
+            cascade_multiplier=cascade,
+            reasoning=hop_reasoning,
+            chain_position=position,
+            chain_root_decision_id=chain_root_id,
+            chain_terminal=is_terminal,
+            chain_systems_count=systems_count,
+        ))
+    return links
 
 
 # ─────────────────────────────────────────────
@@ -310,8 +492,9 @@ def persist_link(link: AttributionLink, db_path: str | None = None) -> dict:
                 id, decision_certificate_id, outcome_event_id,
                 confidence, attribution_method, layer_number,
                 cascade_multiplier, attributed_at, attributed_by,
-                reasoning, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                reasoning, chain_position, chain_root_decision_id,
+                chain_terminal, chain_systems_count, schema_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 link.id,
@@ -324,12 +507,40 @@ def persist_link(link: AttributionLink, db_path: str | None = None) -> dict:
                 link.attributed_at,
                 link.attributed_by,
                 link.reasoning,
+                link.chain_position,
+                link.chain_root_decision_id,
+                1 if link.chain_terminal else 0,
+                link.chain_systems_count,
                 link.schema_version,
             ),
         )
     finally:
         conn.close()
     return _link_to_dict(link)
+
+
+def walk_causal_chain(
+    decision: DecisionCertificateLike,
+    outcome: OutcomeEventLike,
+    *,
+    chain_links: Iterable[dict] | None = None,
+    decision_resolver: DecisionResolver | None = None,
+    persist: bool = False,
+    db_path: str | None = None,
+) -> list[dict]:
+    """Convenience wrapper: walk + optionally persist.
+
+    Returns the list of links as plain dicts (sorted by chain_position asc).
+    """
+    links = attribute_causal_chain(
+        decision, outcome,
+        chain_links=chain_links,
+        decision_resolver=decision_resolver,
+    )
+    if persist:
+        for link in links:
+            persist_link(link, db_path=db_path)
+    return [_link_to_dict(link) for link in links]
 
 
 def list_links_for_decision(
@@ -377,20 +588,26 @@ def attribute(
     *,
     decision_entity: str = "",
     horizon_days: Optional[int] = None,
+    chain_links: Iterable[dict] | None = None,
+    decision_resolver: DecisionResolver | None = None,
 ) -> list[AttributionLink]:
     """Run the three-stage attribution algorithm and return all links produced.
 
-    v0.5 ships stages 1 + 2. Stage 3 is wired but returns []. Each stage is
-    tried in order; if direct matches we still allow temporal as well only when
-    the entity differs (cascade case) — for v0.5 we collapse to: direct wins
-    if it fires, otherwise temporal+entity attempts.
+    v0.6 ships all three stages. Stage 3 (causal-chain) is opt-in via
+    `chain_links` or `decision_resolver`; when neither is provided it returns
+    [] (never synthesizes hops we can't evidence).
+
+    Ordering:
+      - direct (stage 1) wins if it fires; chain is appended after.
+      - otherwise temporal (stage 2) fires (if entity supplied), and chain is
+        appended.
+      - chain is *always* appended when observable — it carries different
+        signal (cross-system propagation) and doesn't duplicate the direct
+        attribution.
     """
     direct = attribute_direct(decision, outcome)
-    if direct is not None:
-        return [direct]
-
     temporal: Optional[AttributionLink] = None
-    if decision_entity:
+    if direct is None and decision_entity:
         temporal = attribute_temporal_entity(
             decision, outcome,
             decision_entity=decision_entity,
@@ -398,11 +615,18 @@ def attribute(
         )
 
     links: list[AttributionLink] = []
-    if temporal is not None:
+    if direct is not None:
+        links.append(direct)
+    elif temporal is not None:
         links.append(temporal)
 
-    # Stage 3 stub — currently always []
-    links.extend(attribute_causal_chain(decision, outcome))
+    # Stage 3 — runs whenever the caller provides chain inputs (real impl).
+    if chain_links is not None or decision_resolver is not None:
+        links.extend(attribute_causal_chain(
+            decision, outcome,
+            chain_links=chain_links,
+            decision_resolver=decision_resolver,
+        ))
     return links
 
 
@@ -439,5 +663,9 @@ def _link_to_dict(link: AttributionLink) -> dict:
         "attributed_at": link.attributed_at,
         "attributed_by": link.attributed_by,
         "reasoning": link.reasoning,
+        "chain_position": link.chain_position,
+        "chain_root_decision_id": link.chain_root_decision_id,
+        "chain_terminal": link.chain_terminal,
+        "chain_systems_count": link.chain_systems_count,
         "schema_version": link.schema_version,
     }
