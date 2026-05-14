@@ -14,6 +14,7 @@ Self-doctrine: deterministic, audit-logged, idempotent, local-first.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -69,6 +70,16 @@ class LocalCodebaseAdapter:
     SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".next", "dist",
                  "build", ".turbo", ".venv", "venv", "generated",
                  "__generated__", ".cache", "coverage"}
+    # Multi-segment path prefixes to exclude. Used for transient or
+    # mirror trees that single-segment matching would miss (e.g.
+    # `.claude/worktrees/agent-*` — Claude Code agent worktrees that
+    # duplicate real repo code and produce phantom drift hits).
+    # Matched as ordered consecutive parts anywhere in the relative path.
+    # WHY: 8/29 CRIT-011 hits on the 2026-05-14 scan came from agent
+    # worktree mirrors of `tests/test_drift_preventive_rules.py`.
+    SKIP_PATH_PREFIXES = (
+        (".claude", "worktrees"),
+    )
     INCLUDE_EXT = {".ts", ".tsx", ".js", ".jsx", ".py", ".md", ".yaml",
                    ".yml", ".json", ".prisma", ".sql", ".sh"}
     # Files with no extension that we still want to scan (Dockerfile, etc).
@@ -89,10 +100,24 @@ class LocalCodebaseAdapter:
                 continue
             yield from self._walk_repo(repo_dir)
 
+    @classmethod
+    def _path_excluded(cls, path: Path) -> bool:
+        """True if path is inside a skipped directory or skipped prefix."""
+        parts = path.parts
+        if any(part in cls.SKIP_DIRS for part in parts):
+            return True
+        for prefix in cls.SKIP_PATH_PREFIXES:
+            # Match the prefix as consecutive segments anywhere in parts.
+            n = len(prefix)
+            for i in range(len(parts) - n + 1):
+                if tuple(parts[i:i + n]) == prefix:
+                    return True
+        return False
+
     def _walk_repo(self, repo: Path) -> Iterator[Artifact]:
         files: list[Path] = []
         for path in repo.rglob("*"):
-            if any(part in self.SKIP_DIRS for part in path.parts):
+            if self._path_excluded(path):
                 continue
             if not path.is_file():
                 continue
@@ -1952,6 +1977,111 @@ def _check_cloud_sql_url_discipline(
     return violations
 
 
+def _check_engine_module_missing_penrose_signal(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-019: Per penrose_falsification_doctrine.md — every new module
+    under `engine/<sub-package>/*.py` must declare a Penrose signal +
+    dimension in the module docstring (or top-of-file comment block).
+
+    WHY: After Codification + Human Override engines ship (both v0.5),
+    the doctrine commits to making Penrose-signal declarations mandatory
+    so the falsification dashboard can audit every engine module. Modules
+    that predate this rule (pre-2026-05-14 mtime) are grandfathered
+    until next material edit (>10-line diff — out of scope for v0; the
+    rule fires on absence and gracefully accepts a `# grandfathered:` or
+    `# legacy:` first-line escape hatch).
+
+    Heuristic:
+      - Apply only to .py files whose repo-relative path matches
+        `engine/<sub-package>/<file>.py` (at least two path segments
+        beyond `engine/`, excluding `engine/__init__.py` and
+        bare `engine/<file>.py` top-level modules).
+      - Skip `__init__.py` empty stubs and anything under `tests/`.
+      - Read the first 60 lines: if neither `penrose_signal:` nor
+        `penrose_dimension:` appears in a docstring or `#` comment line,
+        fire MAJOR.
+      - First-5-line `# legacy:` or `# grandfathered:` markers exempt.
+      - `# noqa: MAJ-019` on any line of the first 60 also exempts.
+    """
+    if art.artifact_type != "code":
+        return []
+    if art.metadata.get("ext") != ".py":
+        return []
+    identifier = art.identifier
+    # Match `<repo>/engine/<subpackage>/<file>.py` — first segment is repo,
+    # second must be `engine`, third is sub-package, fourth+ is module.
+    parts = Path(identifier).parts
+    if len(parts) < 4:
+        return []
+    if parts[1] != "engine":
+        return []
+    filename = parts[-1]
+    if filename == "__init__.py":
+        return []
+    if "tests" in parts:
+        return []
+
+    lines = art.content.split("\n")
+    head = "\n".join(lines[:60])
+
+    # Exemptions
+    first_five = "\n".join(lines[:5]).lower()
+    if "# legacy:" in first_five or "# grandfathered:" in first_five:
+        return []
+    if "noqa: MAJ-019" in head:
+        return []
+
+    has_signal = bool(re.search(r"penrose_signal\s*:", head, re.IGNORECASE))
+    has_dimension = bool(re.search(
+        r"penrose_dimension\s*:", head, re.IGNORECASE))
+    if has_signal and has_dimension:
+        return []
+
+    missing: list[str] = []
+    if not has_signal:
+        missing.append("penrose_signal")
+    if not has_dimension:
+        missing.append("penrose_dimension")
+
+    return [Violation(
+        rule_id=rule["id"],
+        severity=rule["severity"],
+        artifact=art.identifier,
+        location=art.identifier,
+        excerpt=(
+            "engine module missing Penrose declaration: "
+            f"{' + '.join(missing)} (per penrose_falsification_doctrine.md)"
+        ),
+        suggested_fix=rule.get("remediation", ""),
+    )]
+
+
+def _path_matches_exclude(
+    identifier: str, excludes: list[str] | None
+) -> bool:
+    """Return True if `identifier` matches any glob in `excludes`.
+
+    Matches against both the raw identifier (e.g.
+    `decision-engine/tests/test_drift_preventive_rules.py`) and the
+    repo-relative form (first path segment stripped — e.g.
+    `tests/test_drift_preventive_rules.py`). This lets rule authors
+    write either form in `path_exclude:` — repo-relative is more
+    portable across the multi-repo scan.
+    """
+    if not excludes:
+        return False
+    candidates = [identifier]
+    parts = Path(identifier).parts
+    if len(parts) > 1:
+        candidates.append(str(Path(*parts[1:])))
+    for pat in excludes:
+        for cand in candidates:
+            if fnmatch.fnmatch(cand, pat):
+                return True
+    return False
+
+
 # Map rule.id → custom structural handler (for rules that need bespoke logic)
 STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "CRIT-001": _check_automation_without_override,
@@ -1969,6 +2099,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-013": _check_cloudbuild_secret_env_in_non_bash_step,
     "MAJ-014": _check_cloudsql_password_drift_between_instance_and_secret,
     "MAJ-015": _check_cloudrun_runtime_sa_missing_cloudsql_client,
+    "MAJ-019": _check_engine_module_missing_penrose_signal,
     "MAJ-020": _check_dockerfile_alembic_discipline,
     "MAJ-021": _check_cloud_sql_url_discipline,
     "MAJ-006": _check_schema_without_migration,
@@ -1997,6 +2128,17 @@ class RuleEngine:
         for rule in self.applicable_rules(art.source):
             scope = rule.get("scope", [])
             if scope and art.artifact_type not in self._expand_scope(scope):
+                continue
+            # Per-rule path exclusion (optional `path_exclude:` field in
+            # DRIFT_RULES.yaml). Lets a rule skip artifacts whose identifier
+            # matches any glob in the list. Used to exempt test-fixture
+            # files that intentionally demonstrate an anti-pattern in
+            # string literals (the scanner should not flag its own self-
+            # test inputs). Match is checked against the full identifier
+            # and against the path relative to its repo root (first path
+            # segment stripped), so authors can write either form.
+            # WHY: CRIT-011 false-positive cluster on 2026-05-14.
+            if _path_matches_exclude(art.identifier, rule.get("path_exclude")):
                 continue
             handler = STRUCTURAL_HANDLERS.get(rule["id"]) or \
                 DETECTION_HANDLERS.get(rule.get("detection", {}).get("type"))
