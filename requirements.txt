@@ -4,3 +4,5 @@ pydantic>=2.0.0
 pyyaml>=6.0
 anthropic>=0.40.0
 google-cloud-pubsub>=2.18.0,<3
+# Used by ppeme.emitters.penrose_bft_emitter (lazy-imported; tests pass without it).
+requests>=2.31.0

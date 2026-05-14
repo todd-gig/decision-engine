@@ -35,6 +35,27 @@ steps:
       - '--timeout=300'
       - '--startup-probe=tcpSocket.port=8000,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=30'
       - '--no-allow-unauthenticated'
+      # PPEME→Penrose BFT emitter — metric #6 wire (super_additive_network_value).
+      # In single-cluster deploys the scoreboard URL points back at this same
+      # service; in multi-cluster it points at a peer. Empty default leaves the
+      # emitter in disabled/dry-run mode (per always-online priority: missing
+      # config never blocks startup).
+      - '--update-env-vars=PENROSE_SCOREBOARD_URL=${_PENROSE_SCOREBOARD_URL}'
+      # Optional bearer token via Secret Manager. Ops can wire this with:
+      #   gcloud builds submit --substitutions=_PENROSE_SCOREBOARD_TOKEN_SECRET=penrose-scoreboard-token:latest
+      # then add: --update-secrets=PENROSE_SCOREBOARD_TOKEN=${_PENROSE_SCOREBOARD_TOKEN_SECRET}
+      # The emitter reads PENROSE_SCOREBOARD_TOKEN from env and attaches Bearer
+      # auth when present; absent token = unauthenticated POST.
+
+substitutions:
+  # Penrose Scoreboard inbox URL — points back at this service in single-cluster
+  # deploys; can point at a peer in multi-cluster mode. Empty default keeps the
+  # emitter in dry-run/disabled mode until ops sets a real value.
+  _PENROSE_SCOREBOARD_URL: ''
+  # Reserved for future use — Secret Manager binding name for the bearer token.
+  # Not currently wired into --update-secrets (intentionally; see comment above)
+  # so a missing secret cannot fail the deploy.
+  _PENROSE_SCOREBOARD_TOKEN_SECRET: 'penrose-scoreboard-token:latest'
 
 images:
   - 'gcr.io/$PROJECT_ID/decision-engine:$COMMIT_SHA'

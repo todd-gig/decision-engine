@@ -27,6 +27,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
     "anthropic>=0.40.0",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
@@ -49,8 +50,8 @@ Documentation = "https://github.com/todd-gig/decision-engine/tree/main/docs"
 decision-engine = "cli:main"
 
 [tool.setuptools.packages.find]
-# Engine package is at ./engine/
-include = ["engine*"]
+# Engine package is at ./engine/; PPEME sub-package at ./ppeme/
+include = ["engine*", "ppeme*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
