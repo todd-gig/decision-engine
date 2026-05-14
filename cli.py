@@ -9,6 +9,8 @@ Usage:
     python cli.py learning-summary        # Print institutional learning summary
     python cli.py seed-certs              # Seed trust certificates to memory/certs/
     python cli.py codification-sweep      # Run analyzer + readiness gate; open ready proposals
+    python cli.py override-sweep [--days N] [--dry-run]
+                                          # Run nightly human-override pattern sweep
 """
 
 import sys
@@ -158,6 +160,32 @@ def cmd_codification_sweep():
     print(json.dumps(report.to_dict(), indent=2))
 
 
+def cmd_override_sweep(args: list[str]):
+    """Run the human-override nightly pattern sweep.
+
+    Detects override clusters in the last N days, persists them to
+    override_patterns, and opens negative-polarity codification
+    proposals for stable patterns (cluster_size ≥5, span ≥48h).
+    """
+    from engine.human_override import sweep
+    window_days = 1
+    dry_run = False
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "--days" and i + 1 < len(args):
+            window_days = int(args[i + 1])
+            i += 2
+        elif tok == "--dry-run":
+            dry_run = True
+            i += 1
+        else:
+            print(f"Unknown override-sweep arg: {tok}")
+            sys.exit(1)
+    summary = sweep.run_nightly_sweep(window_days=window_days, dry_run=dry_run)
+    print(json.dumps(summary, indent=2))
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -180,6 +208,8 @@ def main():
         cmd_seed_certs()
     elif command == "codification-sweep":
         cmd_codification_sweep()
+    elif command == "override-sweep":
+        cmd_override_sweep(sys.argv[2:])
     else:
         print(f"Unknown command: {command}")
         print(__doc__)
