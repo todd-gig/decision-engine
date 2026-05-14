@@ -4,14 +4,14 @@ steps:
     args:
       - build
       - '-t'
-      - 'gcr.io/$PROJECT_ID/decision-engine:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/decision-engine:$BUILD_ID'
       - '-t'
       - 'gcr.io/$PROJECT_ID/decision-engine:latest'
       - '.'
 
   # Push both tags
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/decision-engine:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/decision-engine:$BUILD_ID']
 
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/decision-engine:latest']
@@ -23,7 +23,7 @@ steps:
       - run
       - deploy
       - decision-engine
-      - '--image=gcr.io/$PROJECT_ID/decision-engine:$COMMIT_SHA'
+      - '--image=gcr.io/$PROJECT_ID/decision-engine:$BUILD_ID'
       - '--region=us-central1'
       - '--platform=managed'
       - '--port=8000'
@@ -37,7 +37,7 @@ steps:
       - '--no-allow-unauthenticated'
 
 images:
-  - 'gcr.io/$PROJECT_ID/decision-engine:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/decision-engine:$BUILD_ID'
   - 'gcr.io/$PROJECT_ID/decision-engine:latest'
 
 options:
