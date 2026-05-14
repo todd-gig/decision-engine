@@ -5,7 +5,7 @@ Exposes the full pipeline, simplified evaluation, state transitions,
 outcome recording, learning analytics, and configuration.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from typing import Optional
 
 from engine.models import (
@@ -31,6 +31,8 @@ from .schemas import (
     FullDecisionRequest, SimpleEvaluationRequest,
     TransitionRequest, TransitionResponse,
     OutcomeRequest, PipelineResponse, AuditEntry,
+    OverrideRecordRequest, ProposalCreateRequest, ProposalApproveRequest,
+    ProposalSimSummary, AnalyzerRunRequest,
 )
 
 router = APIRouter()
@@ -303,4 +305,190 @@ def unapplied_learnings():
             }
             for r in records
         ],
+    }
+
+
+# ── Human Overrides ─────────────────────────────────────────────────────────
+
+
+@router.post("/v1/overrides", status_code=202)
+def overrides_record(payload: OverrideRecordRequest):
+    """Record a human override of an engine decision.
+
+    Per CRIT-001 (Human Override Non-Negotiable). Persists to the
+    human_overrides SQLite store; 5-type taxonomy classification is
+    computed automatically.
+    """
+    from engine.human_override import OverrideRecord, record_override
+    try:
+        rec = OverrideRecord(
+            decision_id=payload.decision_id,
+            decision_certificate_id=payload.decision_certificate_id,
+            override_type=payload.override_type,
+            overridden_by_user_id=payload.overridden_by_user_id,
+            overridden_at=payload.overridden_at,
+            source_engine=payload.source_engine,
+            surface=payload.surface,
+            original_action=payload.original_action,
+            override_action=payload.override_action,
+            user_reasoning=payload.user_reasoning,
+            freeform_metadata=payload.freeform_metadata,
+        )
+        return record_override(rec)
+    except ValueError as e:
+        # classify_override raises on unknown override_type
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/v1/overrides/{override_id}")
+def overrides_get(override_id: str):
+    """Return one override record by id."""
+    import sqlite3
+    from engine.human_override import storage
+    conn = storage.get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM human_overrides WHERE override_id = ?",
+            (override_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"override {override_id!r} not found")
+        return dict(row)
+    finally:
+        conn.close()
+
+
+@router.get("/v1/overrides")
+def overrides_list(
+    source_engine: Optional[str] = None,
+    override_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    limit: int = 200,
+):
+    """List override records with optional filters."""
+    import sqlite3
+    from engine.human_override import storage
+    limit = max(1, min(limit, 1000))
+    conn = storage.get_connection()
+    try:
+        conn.row_factory = sqlite3.Row
+        clauses = []
+        params: list = []
+        if source_engine is not None:
+            clauses.append("source_engine = ?")
+            params.append(source_engine)
+        if override_type is not None:
+            clauses.append("override_type = ?")
+            params.append(override_type)
+        if user_id is not None:
+            clauses.append("overridden_by_user_id = ?")
+            params.append(user_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        sql = f"""
+            SELECT * FROM human_overrides {where}
+            ORDER BY overridden_at DESC LIMIT ?
+        """
+        rows = conn.execute(sql, params).fetchall()
+        return {
+            "items": [dict(r) for r in rows],
+            "count": len(rows),
+            "filter": {
+                "source_engine": source_engine,
+                "override_type": override_type,
+                "user_id": user_id,
+            },
+        }
+    finally:
+        conn.close()
+
+
+# ── Codification Proposals ──────────────────────────────────────────────────
+
+
+@router.post("/v1/proposals", status_code=201)
+def proposals_open(payload: ProposalCreateRequest):
+    """Open a new codification proposal in the queue (status='open')."""
+    from engine.codification import (
+        CodificationProposal, SimulationResult, open_proposal,
+    )
+    prop = CodificationProposal(
+        candidate_pv=payload.candidate_pv,
+        candidate_sv=payload.candidate_sv,
+        candidate_score=payload.candidate_score,
+        analyzer_run_at=payload.analyzer_run_at,
+        proposed_python=payload.proposed_python,
+        proposed_tests=payload.proposed_tests,
+        why=payload.why,
+        sim=SimulationResult(
+            n=payload.sim.n,
+            divergence_p50=payload.sim.divergence_p50,
+            divergence_p90=payload.sim.divergence_p90,
+            cost_savings_usd=payload.sim.cost_savings_usd,
+            latency_savings_ms=payload.sim.latency_savings_ms,
+        ),
+    )
+    return open_proposal(prop)
+
+
+@router.get("/v1/proposals/{proposal_id}")
+def proposals_get(proposal_id: str):
+    """Return one proposal by id."""
+    from engine.codification import get_proposal
+    body = get_proposal(proposal_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail=f"proposal {proposal_id!r} not found")
+    return body
+
+
+@router.get("/v1/proposals")
+def proposals_list(status: Optional[str] = None, limit: int = 200):
+    """List proposals, optionally filtered by status."""
+    from engine.codification import list_proposals
+    limit = max(1, min(limit, 1000))
+    items = list_proposals(status=status, limit=limit)
+    return {"items": items, "count": len(items), "filter": {"status": status}}
+
+
+@router.post("/v1/proposals/{proposal_id}/approve")
+def proposals_approve(proposal_id: str, payload: ProposalApproveRequest):
+    """Record the human decision on a proposal. Idempotent only for new statuses."""
+    from engine.codification import approve_proposal
+    try:
+        return approve_proposal(
+            proposal_id,
+            approver_user_id=payload.approver_user_id,
+            approval_why=payload.approval_why,
+            new_status=payload.new_status,
+            shipped_pr_url=payload.shipped_pr_url,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/v1/codification/analyze")
+def codification_analyze(payload: AnalyzerRunRequest):
+    """Trigger an analyzer run over llm_audit; optionally open top-N candidates as proposals."""
+    from engine.codification import analyze, open_candidates_as_proposals
+    candidates = analyze(
+        min_volume=payload.min_volume,
+        score_threshold=payload.score_threshold,
+        audit_db_path=payload.audit_db_path,
+    )
+    opened: list[dict] = []
+    if payload.open_top_n_as_proposals > 0 and candidates:
+        opened = open_candidates_as_proposals(
+            candidates,
+            top_n=payload.open_top_n_as_proposals,
+            proposals_db_path=payload.proposals_db_path,
+            why=payload.why,
+        )
+    return {
+        "candidates": [c.to_dict() for c in candidates],
+        "candidate_count": len(candidates),
+        "proposals_opened": opened,
+        "proposals_opened_count": len(opened),
     }
