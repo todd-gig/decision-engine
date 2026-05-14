@@ -36,6 +36,7 @@ from .schemas import (
     SweepRunRequest, ProposalApproveAndCertifyRequest,
     OutcomeSourceCreateRequest, ComputeVarianceRequest, AttributeRequest,
     CalibrationRevisionCreateRequest,
+    NetworkValueRecordRequest,
 )
 
 router = APIRouter()
@@ -1043,3 +1044,81 @@ def proposals_approve_and_certify(
         raise HTTPException(status_code=422, detail=str(e))
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── Penrose Falsification Scoreboard v0.6 ───────────────────────────────────
+
+
+@router.get("/v1/penrose/scoreboard")
+def penrose_scoreboard():
+    """Aggregate read of all 8 Penrose-falsification metrics.
+
+    Per memory penrose_falsification_doctrine.md §Scoreboard. Single
+    payload; per-metric value + trend_target + penrose_signal.
+
+    penrose_signal: weakens
+    penrose_dimension: codification | override_rate | velocity | variance |
+                       cascade | network_value | revenue_per_touch | drift_count
+    """
+    from engine.penrose import ScoreboardSnapshot
+    return ScoreboardSnapshot().snapshot()
+
+
+@router.get("/v1/penrose/scoreboard/{metric}")
+def penrose_scoreboard_metric(metric: str, window_days: Optional[int] = None):
+    """Return one Penrose metric with the metric-specific detail payload.
+
+    Supported metric names: codification_rate, human_override_rate,
+    decision_velocity, ovs_variance, cascade_multiplier,
+    super_additive_network_value, revenue_per_human_touch,
+    drift_critical_count.
+    """
+    from engine.penrose import METRIC_NAMES, ScoreboardSnapshot
+    if metric not in METRIC_NAMES:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"unknown metric {metric!r}; "
+                f"valid: {sorted(METRIC_NAMES)}"
+            ),
+        )
+    sb = ScoreboardSnapshot()
+    # Metrics that accept window_days
+    windowed = {
+        "codification_rate": 90,
+        "human_override_rate": 30,
+        "decision_velocity": 30,
+        "ovs_variance": 30,
+        "revenue_per_human_touch": 90,
+    }
+    if metric in windowed:
+        wd = int(window_days) if window_days is not None else windowed[metric]
+        return getattr(sb, metric)(window_days=wd)
+    # No-window metrics
+    return getattr(sb, metric)()
+
+
+@router.post("/v1/penrose/network-value/record", status_code=202)
+def penrose_network_value_record(payload: NetworkValueRecordRequest):
+    """Receive one (participant, state_vector, timestamp) BFT observation.
+
+    Inbox for PPEME's eventual BFT state emitter. v0.6: endpoint exists,
+    body validation, writes to `network_value_observations` table. Until
+    PPEME emits, the table fills only via this endpoint (test traffic).
+
+    Returns the persisted row. 422 when state_vector does not match the
+    canonical 9 variables (CRIT-010, §5.19).
+
+    penrose_signal: weakens
+    penrose_dimension: network_value
+    """
+    from engine.penrose import record_participant_bft_state
+    try:
+        return record_participant_bft_state(
+            participant_id=payload.participant_id,
+            state_vector_9d=payload.state_vector,
+            timestamp=payload.timestamp,
+            source=payload.source,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))

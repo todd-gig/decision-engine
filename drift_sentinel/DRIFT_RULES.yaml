@@ -547,6 +547,49 @@ rules:
       reach calibration threshold (p50 ≤ 15% over 30 days). §5.19
       production-grade definition.
 
+  - id: MAJ-019
+    name: engine_module_missing_penrose_signal
+    principle_ref: penrose_falsification_doctrine.md §How to Operationalize as GOALS
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Per penrose_falsification_doctrine.md: "After Codification +
+        Override engines ship, propose Drift Sentinel rule: any engine
+        ships without a Penrose signal declaration → MAJOR drift." Both
+        engines have shipped (Codification v0.5 + Human Override v0.5).
+        This rule now activates the doctrine commitment.
+
+        For each NEW python module under `engine/<sub-package>/*.py`
+        (excluding `__init__.py` empty stubs and `tests/`), the module
+        docstring OR a top-of-file comment block MUST declare both:
+          - `penrose_signal:` followed by one of:
+              weakens | strengthens | neutral
+          - `penrose_dimension:` followed by one or more of:
+              codification | override_rate | velocity | variance |
+              cascade | network_value | revenue_per_touch | drift_count
+        Modules under `engine/` that predate this rule (pre-2026-05-14)
+        are grandfathered until next material edit (>10 line diff).
+      patterns:
+        - '^engine/[a-z_][\w]*/[a-z_][\w]*\.py$'
+      negative_signal: |
+        Read the first 60 lines of the module. If neither
+        `penrose_signal:` nor `penrose_dimension:` appears in a docstring
+        or comment, fire. Modules whose first 5 lines contain
+        `# legacy:` or `# grandfathered:` are exempt.
+    remediation: |
+      Add to the module docstring (after WHAT/WHY/WHERE/WHEN/HOW):
+
+          penrose_signal: weakens
+          penrose_dimension: codification | override_rate | velocity |
+                             variance | cascade | network_value |
+                             revenue_per_touch | drift_count
+
+      Per memory penrose_falsification_doctrine.md §How to Operationalize.
+      Every engine ships either Penrose-weakening evidence, Penrose-
+      strengthening evidence, or neutral instrumentation — never undeclared.
+
 # ============================================================================
 # MINOR — STYLISTIC / TACTICAL DEVIATION (log and track)
 # ============================================================================

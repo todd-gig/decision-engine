@@ -379,3 +379,21 @@ class CalibrationRevisionCreateRequest(BaseModel):
     is_removal: bool = False
     additional_signers: list[str] = Field(default_factory=list)
     bypass_authority: bool = False  # for explicit dual-signed admin paths
+
+
+# ── Penrose Falsification Scoreboard v0.6 ───────────────────────────────────
+
+
+class NetworkValueRecordRequest(BaseModel):
+    """POST /v1/penrose/network-value/record — PPEME inbox for BFT state.
+
+    Body validation enforced; CRIT-010 canonical-9 check happens in the
+    emitter and surfaces as HTTP 422 when the state vector keys differ.
+
+    penrose_signal: weakens
+    penrose_dimension: network_value
+    """
+    participant_id: str = Field(..., min_length=1, max_length=128)
+    state_vector: dict = Field(..., description="Canonical 9-var BFT state")
+    timestamp: Optional[str] = None  # ISO-8601; defaults to now() if omitted
+    source: str = Field(default="ppeme", min_length=1, max_length=64)
