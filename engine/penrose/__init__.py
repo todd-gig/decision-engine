@@ -51,6 +51,12 @@ from .human_touch_counter import (
     count_human_touches,
     HumanTouchSummary,
 )
+from .per_entity_revenue import (
+    revenue_per_touch_by_entity,
+    EntityRevenueTouch,
+    KNOWN_ENTITIES,
+    SOURCE_ENGINE_TO_ENTITY,
+)
 
 __all__ = [
     "PENROSE_SCOREBOARD_VERSION",
@@ -64,4 +70,8 @@ __all__ = [
     "list_observations",
     "count_human_touches",
     "HumanTouchSummary",
+    "revenue_per_touch_by_entity",
+    "EntityRevenueTouch",
+    "KNOWN_ENTITIES",
+    "SOURCE_ENGINE_TO_ENTITY",
 ]
