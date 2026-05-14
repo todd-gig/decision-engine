@@ -418,3 +418,47 @@ class NetworkValueRecordRequest(BaseModel):
     state_vector: dict = Field(..., description="Canonical 9-var BFT state")
     timestamp: Optional[str] = None  # ISO-8601; defaults to now() if omitted
     source: str = Field(default="ppeme", min_length=1, max_length=64)
+
+
+# ── OVS-Calibration v0.6 — causal-chain + counterfactual + adapters ─────────
+
+
+class CausalChainHopPayload(BaseModel):
+    """One hop in a pre-walked causal chain (terminal not included)."""
+    decision_certificate_id: str = Field(..., min_length=1)
+    system: str = ""
+    issued_at: str = ""
+    projection_metric: str = ""
+
+
+class CausalChainWalkRequest(BaseModel):
+    """POST /v1/calibration/causal-chain/walk — walk + return chain links.
+
+    Either `chain_links` (pre-walked by caller) OR `resolver_decisions`
+    (caller-supplied lookup table keyed by decision_id) must be set.
+    `resolver_decisions` values follow the `decision_resolver` contract
+    documented on `attribute_causal_chain` — each entry carries
+    `parent_certificate_id`, `evidence_certificate_ids`, `system`, etc.
+    """
+    decision_certificate: DecisionCertificatePayload
+    outcome_event: OutcomeEventPayload
+    chain_links: Optional[list[CausalChainHopPayload]] = None
+    resolver_decisions: Optional[dict[str, dict]] = None
+    persist: bool = False
+
+
+class CounterfactualScoreRequest(BaseModel):
+    """POST /v1/calibration/counterfactual/score — score one counterfactual.
+
+    Returns the score (None when not observable) and optionally persists.
+    """
+    rejected_decision_id: str = Field(..., min_length=1)
+    observed_alternative_outcome_ids: list[str] = Field(..., min_length=1)
+    kind: Literal["direct", "comparative", "temporal"]
+    rejected_projection_value: Optional[float] = None
+    observed_alternative_value: Optional[float] = None
+    alternative_chosen_id: Optional[str] = None
+    evidence_metadata: dict = Field(default_factory=dict)
+    reasoning: str = Field(default="")
+    persist: bool = False
+    scored_by: str = Field(default="system")
