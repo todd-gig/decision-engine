@@ -37,6 +37,7 @@ from .schemas import (
     OutcomeSourceCreateRequest, ComputeVarianceRequest, AttributeRequest,
     CalibrationRevisionCreateRequest,
     NetworkValueRecordRequest,
+    ModuleProposeRequest, ModuleSimulateRequest,
 )
 
 router = APIRouter()
@@ -999,6 +1000,10 @@ def codification_sweep(payload: SweepRunRequest):
     """Run the scheduled codification sweep — analyzer + readiness gate +
     auto-open proposals for ready candidates. This is the entrypoint
     Cloud Scheduler hits to close the Codification Rate flywheel.
+
+    v0.6: when `proposer_enabled` is true (or env
+    `CODIFICATION_PROPOSER_ENABLED=1`), the sweep additionally drafts
+    Python modules + replays them through the simulator.
     """
     from engine.codification import run_sweep
     report = run_sweep(
@@ -1008,8 +1013,163 @@ def codification_sweep(payload: SweepRunRequest):
         proposals_db_path=payload.proposals_db_path,
         open_proposals=payload.open_proposals,
         why=payload.why,
+        proposer_enabled=payload.proposer_enabled,
+        proposer_top_n=payload.proposer_top_n,
     )
     return report.to_dict()
+
+
+# ── Codification v0.6: proposer + simulator + artifact ─────────────────────
+
+
+@router.post("/v1/codification/propose/{proposal_id}")
+def codification_propose(proposal_id: str, payload: ModuleProposeRequest):
+    """Draft a deterministic Python module for an existing proposal.
+
+    The proposer routes through `engine.ai_router.invoke`, validates
+    the generated source against the banned-imports list, and
+    persists a ModuleProposal row + matching .md artifact. Returns
+    the ModuleProposal as a dict.
+
+    422 if the proposal id is unknown or the generated source contains
+    a banned LLM token. 503 if the AI router has no provider available.
+    """
+    from engine.ai_router import ProviderUnavailable
+    from engine.codification import (
+        BannedImportError, get_certificate, get_proposal, propose_python_module,
+    )
+    from engine.codification.proposer import Candidate as ProposerCandidate
+
+    row = get_proposal(proposal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"proposal {proposal_id!r} not found")
+
+    evidence = (
+        list(payload.evidence_ids)
+        if payload.evidence_ids is not None else []
+    )
+    certificate = None
+    if payload.certificate_id:
+        certificate = get_certificate(payload.certificate_id)
+        if certificate is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"certificate {payload.certificate_id!r} not found",
+            )
+
+    candidate = ProposerCandidate(
+        candidate_id=proposal_id,
+        candidate_pv=row["candidate_pv"],
+        candidate_sv=row["candidate_sv"],
+        candidate_score=float(row["candidate_score"] or 0.0),
+        executions=int(row.get("sim_n") or 0),
+        evidence_ids=evidence,
+        why=row.get("why", ""),
+        decision_class=payload.decision_class,
+    )
+    try:
+        mp = propose_python_module(
+            candidate, certificate=certificate,
+            provider=payload.provider, model=payload.model,
+        )
+    except BannedImportError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except ProviderUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return mp.to_dict()
+
+
+@router.post("/v1/codification/simulate/{proposal_id}")
+def codification_simulate(proposal_id: str, payload: ModuleSimulateRequest):
+    """Replay a ModuleProposal against historical audit rows.
+
+    Returns the simulation SimulationResult fields, including
+    `divergence_rate`, `status`, `divergence_cases`, and the proposal
+    hash reference. The proposal is identified by `module_proposal_id`
+    in the body (the path `proposal_id` is the parent codification
+    proposal id, kept for symmetry with `/propose`).
+
+    404 if the module proposal id is unknown. 422 if the proposed
+    module fails to compile.
+    """
+    from engine.codification import (
+        SimulatorCompileError, get_module_proposal, simulate_against_history,
+    )
+    mp = get_module_proposal(payload.module_proposal_id)
+    if mp is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"module proposal {payload.module_proposal_id!r} not found",
+        )
+    # Cross-reference safety: the proposal must belong to the parent.
+    if mp.candidate_id != proposal_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"module proposal {mp.proposal_id!r} belongs to "
+                f"candidate {mp.candidate_id!r}, not {proposal_id!r}"
+            ),
+        )
+    try:
+        sim = simulate_against_history(
+            mp,
+            evidence_decision_ids=payload.evidence_decision_ids,
+            audit_db_path=payload.audit_db_path,
+            divergence_ceiling=payload.divergence_ceiling,
+        )
+    except SimulatorCompileError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {
+        "n": sim.n,
+        "divergence_rate": sim.divergence_rate,
+        "divergence_p50": sim.divergence_p50,
+        "divergence_p90": sim.divergence_p90,
+        "status": sim.status,
+        "divergence_cases": sim.divergence_cases,
+        "module_proposal_id": sim.module_proposal_id,
+        "signature_match_hash": sim.signature_match_hash,
+    }
+
+
+@router.get("/v1/codification/proposals/{proposal_id}/artifact")
+def codification_proposal_artifact(proposal_id: str):
+    """Return the persisted .md artifact for a module proposal.
+
+    `proposal_id` may be the parent codification proposal id (latest
+    module proposal for that candidate is returned) OR a module
+    proposal id directly. 404 when no artifact exists.
+    """
+    from pathlib import Path
+    from engine.codification import (
+        get_module_proposal, list_module_proposals_for_candidate,
+    )
+    mp = get_module_proposal(proposal_id)
+    if mp is None:
+        candidates = list_module_proposals_for_candidate(proposal_id)
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no module proposals exist for {proposal_id!r}",
+            )
+        mp = candidates[0]
+    if not mp.md_path or not Path(mp.md_path).exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"artifact for module proposal {mp.proposal_id!r} missing "
+                f"from disk; expected {mp.md_path!r}"
+            ),
+        )
+    body = Path(mp.md_path).read_text(encoding="utf-8")
+    return {
+        "module_proposal_id": mp.proposal_id,
+        "candidate_id": mp.candidate_id,
+        "md_path": mp.md_path,
+        "signature_match_hash": mp.signature_match_hash,
+        "body": body,
+    }
 
 
 @router.post("/v1/proposals/{proposal_id}/approve-and-certify")
