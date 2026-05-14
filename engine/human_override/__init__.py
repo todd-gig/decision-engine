@@ -17,6 +17,16 @@ v0.5 surface additions:
   - anonymize.hash_user_id(user_id) — cross-org redaction
   - storage.NotSupported / storage.delete_override → forbidden
 
+v0.6 surface additions:
+  - pubsub_emitter.PubSubEmitter(topic_path) — production transport for
+    calibration events; falls back to JSONL when topic unset or emulator
+    is in use (CI / offline dev path stays unchanged).
+  - drift_writer.write_override_drift_signal(signal) — write-through to
+    `drift_sentinel/drift_history.db` so Gate 8 sees override drift in
+    real time. Idempotent within 24h on (rule_id, artifact, location).
+  - drift_writer.flush_recent_patterns_to_drift() — admin re-fire pathway
+    surfaced via POST /v1/overrides/drift/flush.
+
 penrose_signal: weakens
 penrose_dimension: override_rate
 """
