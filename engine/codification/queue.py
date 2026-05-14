@@ -31,11 +31,34 @@ class ProposalStatus(str, Enum):
 
 @dataclass
 class SimulationResult:
+    """Outcome of replaying a proposed Python module against history.
+
+    v0 fields (`n`, divergence_p50/p90, cost/latency savings) describe
+    the analyzer-derived summary. v0.6 extends this dataclass with the
+    fields the simulator populates after actually replaying evidence
+    decisions through the proposed module.
+
+    `status` is `"PASSED"` when divergence_rate is at or below doctrine
+    (≤5%), `"REJECTED_BY_DIVERGENCE"` when above, and `""` when only
+    the analyzer summary fields are populated.
+
+    `divergence_cases` is a list of `{audit_id, expected, actual,
+    error}` dicts capturing the rows where the proposed module
+    disagreed with the recorded LLM output. The simulator caps this
+    list at 25 entries to keep payloads bounded.
+    """
     n: int
     divergence_p50: float
     divergence_p90: float
     cost_savings_usd: Optional[float] = None
     latency_savings_ms: Optional[int] = None
+    # v0.6: simulator fields — defaults preserve back-compat for callers
+    # that only carry the analyzer-derived summary.
+    divergence_rate: float = 0.0
+    status: str = ""
+    divergence_cases: list[dict] = field(default_factory=list)
+    module_proposal_id: str = ""
+    signature_match_hash: str = ""
 
 
 @dataclass
