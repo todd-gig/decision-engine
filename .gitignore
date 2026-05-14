@@ -9,6 +9,12 @@ __pycache__/
 drift_sentinel/drift_history.db
 drift_sentinel/reports/
 
+# Human-override + codification SQLite runtime stores (per-engine, never commit)
+drift_sentinel/human_overrides.db
+drift_sentinel/human_overrides.db-*
+drift_sentinel/codification_proposals.db
+drift_sentinel/codification_proposals.db-*
+
 # Environment
 .env
 *.egg-info/
