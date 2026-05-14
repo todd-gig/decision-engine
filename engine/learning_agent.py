@@ -6,9 +6,13 @@ updates memory files, and adjusts decision weights over time.
 Fact extraction uses Claude when ANTHROPIC_API_KEY is set, falling back to
 heuristic regex extraction so the system works in offline/air-gapped contexts.
 
-Runtime governance: every LLM call carries provider, model, prompt_version,
-and schema_version, and is wrapped by `_invoke_llm` which emits an audit
-record (per Gigaton Canonical First Principles §6).
+Runtime governance: every LLM call flows through engine.ai_router.invoke,
+which enforces CRIT-003 (prompt_version + schema_version) and CRIT-007
+(provider + model) and writes a signed audit row to llm_audit per call.
+
+History: pre-2026-05-14, this module had its own _invoke_llm helper. It
+was migrated to delegate to ai_router as the first eat-our-own-dogfood
+site for the chokepoint introduced in decision-engine PR #16.
 """
 
 from __future__ import annotations
@@ -24,27 +28,15 @@ from .memory_manager import MemoryManager
 from .decision_engine import DecisionRecord, DecisionStatus
 
 try:
-    import anthropic as _anthropic_module
+    import anthropic as _anthropic_module  # noqa: F401  # availability probe only
     _ANTHROPIC_AVAILABLE = True
 except ImportError:
     _ANTHROPIC_AVAILABLE = False
-
-_anthropic_client: "Any | None" = None
-_audit_log = logging.getLogger("decision_engine.llm_audit")
 
 PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-4-6"
 PROMPT_VERSION_FACT_EXTRACT = "fact_extract.v1.0"
 SCHEMA_VERSION_FACT_EXTRACT = "facts_array.v1"
-
-
-def _get_anthropic_client() -> "Any":
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = _anthropic_module.Anthropic(
-            api_key=os.environ["ANTHROPIC_API_KEY"]
-        )
-    return _anthropic_client
 
 
 def _claude_available() -> bool:
@@ -60,23 +52,25 @@ def _invoke_llm(
     schema_version: str,
     max_tokens: int = 512,
 ) -> str:
-    """Provider-agnostic LLM invocation with mandatory audit envelope."""
-    if provider != "anthropic":
-        raise NotImplementedError(f"Provider {provider!r} not wired yet")
-    client = _get_anthropic_client()
-    message = client.messages.create(
+    """Delegate to engine.ai_router.invoke (the ecosystem-wide chokepoint).
+
+    Retained as a thin wrapper so existing call sites in this module don't
+    need to change. Returns the response text only; the full InvokeResult
+    (audit_id, cost_usd, fallback chain) is logged but not returned —
+    callers here only consume the text.
+    """
+    from engine.ai_router import invoke
+    result = invoke(
+        prompt=prompt,
+        provider=provider,
         model=model,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        caller_engine="decision-engine",
+        caller_function="learning_agent._invoke_llm",
         max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
     )
-    text = message.content[0].text if message.content else ""
-    _audit_log.info(
-        "llm_call provider=%s model=%s prompt_version=%s schema_version=%s "
-        "in_chars=%d out_chars=%d",
-        provider, model, prompt_version, schema_version,
-        len(prompt), len(text),
-    )
-    return text
+    return result.text
 
 
 @dataclass
