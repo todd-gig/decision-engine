@@ -186,6 +186,64 @@ Geometric/causal memory architecture as shared substrate; equal 25% Founder shar
 
 ---
 
+### 5.19 Business Field Theory (BFT / Mtheory Math)
+
+**Definition (canonical):** A predictive operating model that treats a business as a high-dimensional state system whose observable outputs (revenue, conversion, churn, growth, enterprise value) are emergent projections of a 9-variable normalized hidden state. Every interaction is a transformation function on that state; every decision is an input to a transformation; outcomes are simulated forward before capital commits. The physics M-theory analogy is structural, not metaphorical: as M-theory unifies fundamental forces into a single higher-dimensional structure, BFT unifies brand, interaction, decision, and revenue into a single business field-theoretic system. **State + Interaction → Emergent Outcome.**
+
+**Core insight:** There is no such thing as an isolated decision. Every decision changes the state of the business system. Brand is not identity — brand is a state field that encodes expectations, trust, meaning, and perceived value.
+
+**State vector (canonical, 9 variables, all normalized 0–1):**
+```
+S(t) = [trust, attention, clarity, desire, urgency, value, friction, social_proof, context_fit]
+```
+The 9 variables are the binding set. Substitution, addition, or removal of variables requires a new amendment under triad sign-off. Variables are bounded `0 ≤ S_i(t) ≤ 1` and clipped on every update.
+
+**Core equations:**
+- Interaction update: `S(t+1) = clip(S(t) + ΔI + ε, 0, 1)`
+- Conversion: `P(convert) = sigmoid(β₀ + β · S(t))` with friction sign flipped (negative coefficient — friction reduces conversion)
+- Revenue: `Revenue = Traffic × P(convert) × AOV`
+- LTV: `LTV = AOV × PurchaseFrequency × RetentionMultiplier` where `RetentionMultiplier = 1 + α₁·trust + α₂·value + α₃·context_fit − α₄·friction`
+- Monte Carlo: repeat scenario N times with stochastic noise → return mean, p10, p50, p90 revenue + risk bands
+
+**4-Layer execution model:**
+- **State Model** — hidden-variable digital twin for user, org, and platform-aggregate scope; estimated from real signal via state_estimator
+- **Interaction Model** — every touchpoint (landing page, pricing surface, sales call, gamification event, gignet local-node behavioral capture, support contact, etc.) registered in an interaction catalog with measured `ΔI` effect vector, estimated cost, and confidence
+- **Transformation Engine** — deterministic application of `(state, interaction) → new_state` under governed decision-engine certificates; auditable provenance
+- **Simulation Layer** — Monte Carlo / probabilistic forecasting predicting how the system evolves under proposed interactions before committing capital. **This is the PPEME Master Calculator.**
+
+**Engine implementation map:**
+- State Model → `user-access-engine` (canonical persona + org persona) + `intelligence-silo` (memory partitions) + PPEME `state_estimator`
+- Interaction Model → `gignet-local-node` (behavioral capture) + Carmen Beach engagement surfaces + gamification event stream consumed by `human-management-engine` + PPEME `interaction_catalog`
+- Transformation Engine → `decision-engine` (decision certificates with QC→VC→TC→EC chain) + `cxguy-methodology` (Trust × Value × Priority ranker)
+- Simulation Layer → **`ppeme` Master Calculator** (Cloud Run service in `gigaton-platform`, `/v1/scenarios/simulate` + `/v1/forecasts`)
+
+**Mantra alignment:** Operationalizes the Connect–Create–Thrive–Evolve cycle by making "Thrive" mathematically forward-simulatable rather than retrospectively measured.
+
+**Substrate dependency:** BFT operates on the SMEN substrate (§5.18). The persistent bi-directional intelligence layer SMEN defines provides the state signal BFT estimates against. Without SMEN, BFT has nothing to read; without BFT, SMEN has no forward-simulation surface. They are paired.
+
+**Falsifiability + production-grade threshold:** The doctrine is correct iff Master Calculator predictions converge on observed outcomes. Production-grade is reached when predicted-vs-actual variance has `p50 ≤ 15%` over a 30-day window for a calibrated decision class. Decision classes below threshold are flagged as *pre-Mtheory* and must not be cited as forecast authority.
+
+**Anti-patterns it rules out (drift-sentinel rule additions):**
+- `decision_without_state_estimate` — any decision certificate of class D2–D6 produced without an attached state vector estimate from a registered state_estimator → MAJOR drift
+- `interaction_without_effect_vector` — any production interaction surfaced to users without a registered entry in the interaction catalog → MINOR drift on first sight, MAJOR if >30 days uncatalogued
+- `forecast_without_confidence_bands` — any forecast cited in a decision certificate that lacks `{p10, p50, p90}` distribution → MAJOR drift
+- `state_vector_substitution` — any code or spec asserting a state vector that does not match the canonical 9 variables → CRITICAL drift (requires amendment)
+- `uncalibrated_forecast_as_authority` — a forecast from a decision class still in pre-Mtheory status (variance > p50 15% over 30 days) cited as authoritative input → MAJOR drift
+- `interaction_without_cost` — interaction entry missing `estimated_cost` field; recommendation panel cannot rank without it → MINOR drift
+
+**How to audit conformance:**
+1. Every Decision Certificate of class D2–D6 should expose `state_vector_at_decision` (9 floats, 0–1) and, where forecast-attached, `forecast: {p10, p50, p90, distribution_method, model_version, confidence}`
+2. Every interaction surface in `gigaton-ui-system` should resolve to an `interaction_id` in PPEME's interaction catalog with a non-null `delta_i` and `estimated_cost`
+3. PPEME's calibration table should carry versioned weight history with WHY (per always-record-WHY); each version tagged with calibration window and decision class
+4. Drift Sentinel weekly scan walks decision-engine certificates + interaction catalog + calibration history + gigaton-ui-system touchpoints; emits anti-pattern signals above
+5. Sunday weekly initiative report includes a "Forecast accuracy" line per calibrated decision class (predicted vs actual, current variance)
+
+**Why this is binding doctrine:** Anchors §5.16's predictable-profitability thesis to a falsifiable, measurable mechanism. Without BFT as canonical doctrine, decision certificates drift toward retrospective scoring (which we already have via §5.2 Value Matrix and §5.3 Trust Matrix) without forward simulation. The platform's strategic claim is that we can predict outcomes — that claim is correct only if there is a doctrinally-required forward-simulation step. Promoted to canonical 2026-05-13 by Todd / Matt / Bella triad sign-off; previously articulated 2026-05-09 (mtheory_business_field_theory.md) and operationalized 2026-05-12 (BFT package ingest) but not yet binding.
+
+**Source:** `claude_business_field_theory_package/docs/business_field_theory.md`, `ppeme/docs/{business_field_theory.md, equations.md, data_mapping.md}`, working Python at `claude_business_field_theory_package/code/business_field_theory_simulation.py`. Memory cross-references: `mtheory_business_field_theory.md`, `bft_package_integration_plan.md`, `predictably_profitable_experience_management_engine.md`, `framework_5_19_bft_amendment.md`.
+
+---
+
 ## 6. RUNTIME GOVERNANCE (REQUIRED FOR PRODUCTION)
 
 Every production decision system must have:
@@ -321,4 +379,4 @@ If any of these files **contradict** this canonical doc, the canonical doc wins 
 
 ---
 
-*Last reconciled: 2026-05-08 (added Framework 5.18 SMEN — promoted from formalized strategic construct to binding canonical doctrine per Todd's escalation 2026-05-08; previously formalized 2025-12-02 v1.0 2026-01-08 but not in canon). Re-run synthesis after any major framework version bump (Claude automation thread package version, MASTER_FIRST_PRINCIPLES_REFERENCE schema version).*
+*Last reconciled: 2026-05-13 (added Framework 5.19 Business Field Theory / Mtheory Math — promoted from canonical methodology + working implementation to binding canonical doctrine per Todd/Matt/Bella triad sign-off under governance bootstrap protocol v0; previously articulated 2026-05-09 in `mtheory_business_field_theory.md` and operationalized 2026-05-12 via `claude_business_field_theory_package` ingest). Prior reconciliation 2026-05-08 (Framework 5.18 SMEN). Re-run synthesis after any major framework version bump (Claude automation thread package version, MASTER_FIRST_PRINCIPLES_REFERENCE schema version).*

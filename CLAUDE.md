@@ -74,7 +74,7 @@ decision-engine/
 
 This repo HOSTS the canonical doc — but it is also subject to it. The canonical doc is the contract; the code is the enforcement. When they disagree, the canonical doc wins until the code is updated to match.
 
-- [`drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md`](drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md) — 7 non-negotiables, 15 first principles, 8 ethos filters, **18 frameworks** (5.18 SMEN added 2026-05-08), 12 anti-patterns
+- [`drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md`](drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md) — 7 non-negotiables, 15 first principles, 8 ethos filters, **19 frameworks** (5.18 SMEN added 2026-05-08; 5.19 BFT added 2026-05-13), 12 anti-patterns
 - [`MASTER_FIRST_PRINCIPLES_REFERENCE.md`](MASTER_FIRST_PRINCIPLES_REFERENCE.md) — every threshold, weight, formula
 
 ### Doctrine-driven constraints (apply here)
