@@ -25,6 +25,10 @@ drift_sentinel/ovs_calibration.db
 drift_sentinel/ovs_calibration.db-*
 calibration-revisions/
 
+# Codification proposer artifacts (per-deploy `.md` twins emitted by
+# engine/codification/proposer.py at runtime — runtime state, not source).
+codification-proposals/
+
 # Environment
 .env
 *.egg-info/
