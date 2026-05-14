@@ -157,8 +157,18 @@ def gate_4_reversibility(decision: DecisionObject) -> tuple[bool, str]:
 
 
 def gate_5_risk_containment(decision: DecisionObject) -> tuple[bool, str]:
-    """Gate 5: Downside bounded and rollback mechanism exists."""
+    """Gate 5: Downside bounded and rollback mechanism exists.
+
+    Pricing-decision sub-check (2026-05-13, closes B-05): when the decision
+    touches pricing/margin/rates per pricing_bridge.is_pricing_decision(),
+    consult gigaton-engine for an out-of-band sanity signal. A status="ok"
+    response with guard_rail_status="violation" demotes the decision to
+    ESCALATE. status="unavailable" is observational (logged in the gate
+    rationale but doesn't change the verdict) so a gigaton-engine outage
+    cannot block the entire decision pipeline.
+    """
     issues = []
+    pricing_note = ""
 
     if decision.value_scores.downside_risk > 3:
         issues.append(f"Downside risk {decision.value_scores.downside_risk} exceeds containment threshold 3")
@@ -172,10 +182,33 @@ def gate_5_risk_containment(decision: DecisionObject) -> tuple[bool, str]:
     if not decision.monitoring_metric:
         issues.append("No monitoring metric defined")
 
-    if issues:
-        return False, "; ".join(issues)
+    # Pricing-domain consultation — observational unless guard_rail violated
+    try:
+        from engine.pricing_bridge import get_pricing_signal, is_pricing_decision
+        if is_pricing_decision(decision):
+            envelope = get_pricing_signal(decision)
+            if envelope["status"] == "ok":
+                sig = envelope.get("signal") or {}
+                grs = sig.get("guard_rail_status")
+                if grs == "violation":
+                    issues.append(
+                        f"gigaton-engine pricing guard-rail violation: {sig.get('warning', 'no detail')}"
+                    )
+                else:
+                    pricing_note = (
+                        f"; pricing-engine consulted: {grs or 'ok'}"
+                        f" (margin={sig.get('margin', 'n/a')})"
+                    )
+            elif envelope["status"] == "unavailable":
+                pricing_note = f"; pricing-engine unavailable ({envelope.get('reason', '')[:60]})"
+    except Exception:
+        # Defensive: any failure in the bridge cannot itself break the gate
+        pricing_note = "; pricing-engine consult skipped (internal error)"
 
-    return True, "Risk containment adequate — downside bounded, monitoring in place"
+    if issues:
+        return False, "; ".join(issues) + pricing_note
+
+    return True, f"Risk containment adequate — downside bounded, monitoring in place{pricing_note}"
 
 
 def gate_6_approval_routing(decision: DecisionObject,
