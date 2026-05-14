@@ -15,8 +15,8 @@
 #   detection: how the scanner identifies a violation (regex/structural/missing-field)
 #   remediation: short fix instructions
 
-version: 1.0.0
-generated: 2026-05-05
+version: 1.1.0
+generated: 2026-05-14
 canonical_ref: GIGATON_CANONICAL_FIRST_PRINCIPLES.md
 
 # ============================================================================
@@ -189,6 +189,59 @@ rules:
       genuinely needed, draft an amendment per
       governance_signoff_bootstrap_protocol and merge under triad
       sign-off BEFORE introducing it in code. See §5.19.
+
+  - id: CRIT-011
+    name: env_mutation_in_request_handler
+    principle_ref: §6 (audit envelope), §7 (concurrency safety)
+    severity: critical
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Mutating `os.environ` (or `environ.__setitem__`) inside a function
+        whose decorators include a FastAPI route registration is a
+        cross-user credential contamination vector. FastAPI handlers run
+        concurrently across an asyncio event loop AND across uvicorn
+        workers; `os.environ` is process-global. Writing one user's
+        secret reference into `os.environ` and then having a second
+        request read it produces silent credential swap.
+
+        Documented bug class: SIE PR `fix/llm-secret-ref-param`
+        (2026-05-14) removed `os.environ[KEY] = secret_ref` from
+        `_intel_call_one_provider`; see memory file
+        `design_decision_secret_ref_parameter_2026_05_14.md`.
+
+        Fires on:
+          - `os.environ[KEY] = ...` inside a function whose decorators
+            include `@app.<verb>` / `@router.<verb>` / FastAPI APIRouter
+            method decorators (get/post/put/patch/delete/options/head)
+          - `os.environ.__setitem__(...)` in the same contexts
+          - `os.environ.update({...})` in the same contexts
+          - `os.environ.pop(...)` is allowed (read-side; not contamination)
+            and does NOT fire
+
+        v0 detection is direct-decorator only (does not trace transitive
+        callers); the bug-class lives in route handlers. Helper functions
+        called by handlers are out of v0 scope but should be re-evaluated
+        if the rule does not catch a future variant.
+      patterns:
+        - 'os\.environ\['
+        - 'os\.environ\.(update|__setitem__)'
+      negative_signal: |
+        For each match, walk back to the enclosing `def`/`async def` and
+        inspect the decorator stack within ±10 lines above the def line.
+        Fire only if any decorator matches FastAPI route patterns
+        (`@app.get`, `@app.post`, `@router.get`, `@router.post`, etc.).
+        Read-only `os.environ.get(KEY)` / `KEY in os.environ` does NOT
+        fire — only mutation.
+    remediation: |
+      Pass the value as an explicit parameter; do not mutate process-global
+      state in concurrent handlers. See memory
+      `design_decision_secret_ref_parameter_2026_05_14.md`. The SIE
+      pattern: replaced `os.environ[X] = ref` with passing
+      `secret_ref=ref` as an explicit kwarg through the provider call
+      chain. Each request carries its own credential reference; no
+      shared mutable state.
 
 # ============================================================================
 # MAJOR — DRIFTS FROM CORE PRINCIPLE OR FRAMEWORK (review required)
@@ -727,6 +780,54 @@ rules:
       pick one and stay consistent within a vertical). May be a rough
       estimate; calibration improves over time. §5.19 Interaction Model.
 
+  - id: MIN-009
+    name: cloud_run_max_instances_above_one
+    principle_ref: §7 (Cloud Run readiness), v0 single-instance design assumptions
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        A Cloud Run service deploy/config sets `--max-instances` (CLI flag)
+        or `max_instances`/`maxScale` (YAML/annotation) to an integer > 1.
+        Several v0 designs assume single-instance correctness:
+          - SecretStore cache invalidation (PR #208 — process-local cache;
+            cross-instance staleness on rotation; see memory
+            `design_decision_secret_store_cache_2026_05_14.md`)
+          - In-memory rate-limiter state (per-process counters)
+          - Scheduler / cron leader-election (no distributed lock)
+        Lifting `--max-instances` above 1 BEFORE v1 cross-instance work
+        ships introduces silent correctness bugs (stale credentials,
+        rate-limit bypass, duplicate scheduled jobs).
+
+        Fires on:
+          - `cloudbuild.yaml` deploy steps with
+            `--max-instances=N` / `--max-instances N` where N > 1
+          - `service.yaml` / Cloud Run YAML with
+            `autoscaling.knative.dev/maxScale: "N"` annotation where N > 1
+          - `max_instances: N` / `maxScale: N` field where N > 1
+      patterns:
+        - '--max-instances[= ]\s*(\d+)'
+        - 'maxScale["\s:]+["'']?(\d+)'
+        - 'max_instances\s*[:=]\s*(\d+)'
+      negative_signal: |
+        Parse the captured integer. Fire when N > 1. Do NOT fire when
+        N <= 1 or when the flag/field is absent (Cloud Run default of
+        max=100 is irrelevant here — this rule is a trigger for design
+        review, fired only when the operator explicitly raises the cap
+        in a config file).
+    remediation: |
+      Cloud Run --max-instances > 1 triggers v1 follow-ups: see memory
+      files design_decision_secret_store_cache_2026_05_14 + initiate
+      cross-instance work. Specifically, before scaling out:
+        1. SecretStore: implement Pub/Sub cache invalidation OR rotate
+           via revision-roll (each new revision has cold cache).
+        2. Rate limiters: move counters to Redis/Memorystore OR accept
+           per-instance multiplication.
+        3. Scheduler jobs: implement distributed leader-election OR
+           keep schedulers as Cloud Run Jobs (always single-shot).
+      File a v1 follow-up issue referencing this rule fire before merge.
+
 # ============================================================================
 # INFO — APPROVED EXCEPTIONS / DOCUMENTED OVERRIDES
 # ============================================================================
@@ -769,7 +870,7 @@ source_routing:
       - bella-byte
       - playa-del-carmen
     skip_dirs: [node_modules, __pycache__, .git, .next, dist, build, .turbo]
-    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005]
+    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
 
   local_docs:
     root: /Users/admin/Downloads
