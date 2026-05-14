@@ -247,3 +247,27 @@ class AnalyzerRunRequest(BaseModel):
     audit_db_path: Optional[str] = None
     proposals_db_path: Optional[str] = None
     why: str = Field(default="scheduled analyzer run")
+
+
+# ── AI Router HTTP wrapper (POST /v1/ai/invoke) ─────────────────────────────
+
+
+class AIInvokeRequest(BaseModel):
+    """POST /v1/ai/invoke — HTTP surface over engine.ai_router.invoke.
+
+    Lets non-Python engines (or engines that can't import decision-engine
+    directly — e.g. sales-os, HME) route LLM calls through the canonical
+    chokepoint. CRIT-003 + CRIT-007 enforcement happens server-side.
+    """
+    prompt: str = Field(..., min_length=1)
+    provider: str = Field(..., min_length=1, max_length=32)
+    model: str = Field(..., min_length=1, max_length=128)
+    prompt_version: str = Field(..., min_length=1, max_length=128)
+    schema_version: str = Field(..., min_length=1, max_length=128)
+    caller_engine: str = Field(..., min_length=1, max_length=64)
+    caller_function: str = Field(..., min_length=1, max_length=128)
+    max_tokens: int = Field(default=1024, ge=1, le=200000)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    fallback_chain: Optional[list[str]] = None
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    audit_metadata: Optional[dict] = None

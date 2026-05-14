@@ -32,7 +32,7 @@ from .schemas import (
     TransitionRequest, TransitionResponse,
     OutcomeRequest, PipelineResponse, AuditEntry,
     OverrideRecordRequest, ProposalCreateRequest, ProposalApproveRequest,
-    ProposalSimSummary, AnalyzerRunRequest,
+    ProposalSimSummary, AnalyzerRunRequest, AIInvokeRequest,
 )
 
 router = APIRouter()
@@ -492,3 +492,225 @@ def codification_analyze(payload: AnalyzerRunRequest):
         "proposals_opened": opened,
         "proposals_opened_count": len(opened),
     }
+
+
+# ── AI Router HTTP wrapper ──────────────────────────────────────────────────
+
+
+@router.post("/v1/ai/invoke")
+def ai_invoke(payload: AIInvokeRequest):
+    """HTTP wrapper around engine.ai_router.invoke.
+
+    Per specs/ai_routing_engine_v0.md §v0→v0.5 graduation criteria: when
+    non-Python or cross-repo callers need to use the chokepoint, they go
+    through this endpoint instead of importing the package directly. All
+    enforcements (CRIT-003 + CRIT-007 + HMAC audit row) happen server-side.
+    """
+    from engine.ai_router import invoke, ProviderUnavailable
+    try:
+        result = invoke(
+            prompt=payload.prompt,
+            provider=payload.provider,
+            model=payload.model,
+            prompt_version=payload.prompt_version,
+            schema_version=payload.schema_version,
+            caller_engine=payload.caller_engine,
+            caller_function=payload.caller_function,
+            max_tokens=payload.max_tokens,
+            temperature=payload.temperature,
+            fallback_chain=payload.fallback_chain,
+            timeout_seconds=payload.timeout_seconds,
+            audit_metadata=payload.audit_metadata,
+        )
+    except ProviderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "text": result.text,
+        "provider_used": result.provider_used,
+        "model_used": result.model_used,
+        "prompt_version": result.prompt_version,
+        "schema_version": result.schema_version,
+        "in_tokens": result.in_tokens,
+        "out_tokens": result.out_tokens,
+        "cost_usd": result.cost_usd,
+        "latency_ms": result.latency_ms,
+        "audit_id": result.audit_id,
+        "fallback_chain_taken": result.fallback_chain_taken,
+    }
+
+
+# ── Drift Sentinel queries ──────────────────────────────────────────────────
+
+
+@router.get("/v1/drift/open")
+def drift_open(
+    severity: Optional[str] = None,
+    limit: int = 200,
+    scan_id: Optional[str] = None,
+):
+    """Open drift signals from the most recent scan in drift_history.db.
+
+    Used by the Founder UI drift-triage panel. Returns the most-recent
+    scan's violations grouped by severity, with optional filters.
+
+    Per drift_sentinel/drift_scan.py the schema is:
+        scans(scan_id, timestamp, sources, total_artifacts,
+              critical, major, minor, info)
+        violations(id, scan_id, rule_id, severity, artifact, location, excerpt)
+    """
+    import sqlite3
+    from pathlib import Path
+
+    if severity is not None and severity not in {"critical", "major", "minor", "info"}:
+        raise HTTPException(
+            status_code=422,
+            detail="severity must be one of: critical, major, minor, info",
+        )
+    limit = max(1, min(limit, 1000))
+
+    # drift_history.db lives at <repo>/drift_sentinel/drift_history.db
+    db_path = Path(__file__).resolve().parent.parent / "drift_sentinel" / "drift_history.db"
+    if not db_path.exists():
+        return {
+            "scan": None,
+            "items": [],
+            "count": 0,
+            "filter": {"severity": severity, "scan_id": scan_id},
+            "note": "drift_history.db not present; scanner hasn't run yet",
+        }
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+
+        if scan_id is None:
+            scan_row = conn.execute(
+                "SELECT * FROM scans ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            if scan_row is None:
+                return {
+                    "scan": None, "items": [], "count": 0,
+                    "filter": {"severity": severity, "scan_id": None},
+                }
+            scan_id = scan_row["scan_id"]
+            scan_dict = dict(scan_row)
+        else:
+            scan_row = conn.execute(
+                "SELECT * FROM scans WHERE scan_id = ?", (scan_id,),
+            ).fetchone()
+            if scan_row is None:
+                raise HTTPException(status_code=404, detail=f"scan_id {scan_id!r} not found")
+            scan_dict = dict(scan_row)
+
+        # Severity sort: critical > major > minor > info
+        sev_order_sql = (
+            "CASE severity WHEN 'critical' THEN 0 WHEN 'major' THEN 1 "
+            "WHEN 'minor' THEN 2 ELSE 3 END"
+        )
+        params: list = [scan_id]
+        sql = (
+            "SELECT * FROM violations WHERE scan_id = ?"
+        )
+        if severity is not None:
+            sql += " AND severity = ?"
+            params.append(severity)
+        sql += f" ORDER BY {sev_order_sql}, rule_id LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        return {
+            "scan": scan_dict,
+            "items": [dict(r) for r in rows],
+            "count": len(rows),
+            "filter": {"severity": severity, "scan_id": scan_id},
+        }
+    finally:
+        conn.close()
+
+
+# ── Doctrine (read-only) ────────────────────────────────────────────────────
+
+
+@router.get("/v1/doctrine/version")
+def doctrine_version():
+    """Return version + reconciliation date of canonical first principles.
+
+    Used by Founder UI to surface the current doctrine version and
+    detect when a re-render of the doctrine editor is needed.
+    """
+    import re
+    from pathlib import Path
+
+    canon_path = (
+        Path(__file__).resolve().parent.parent
+        / "drift_sentinel" / "GIGATON_CANONICAL_FIRST_PRINCIPLES.md"
+    )
+    if not canon_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="GIGATON_CANONICAL_FIRST_PRINCIPLES.md not found",
+        )
+    text = canon_path.read_text(encoding="utf-8")
+    # Look for "*Last reconciled: YYYY-MM-DD" — the canonical reconciliation marker
+    reconciled = None
+    m = re.search(
+        r"\*Last reconciled:\s*(\d{4}-\d{2}-\d{2})", text, re.IGNORECASE,
+    )
+    if m:
+        reconciled = m.group(1)
+
+    # Count frameworks (matches "### 5.X" pattern) for a quick health check
+    frameworks = len(re.findall(r"^### 5\.\d+(?:\s|\.)", text, re.MULTILINE))
+    principles = len(re.findall(r"^## 2\.\d+(?:\s|\.)", text, re.MULTILINE))
+    return {
+        "path": "drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md",
+        "last_reconciled": reconciled,
+        "framework_count": frameworks,
+        "principle_count": principles,
+        "size_bytes": len(text.encode("utf-8")),
+    }
+
+
+@router.get("/v1/doctrine")
+def doctrine_body(
+    include_body: bool = False,
+    section: Optional[str] = None,
+):
+    """Return canonical first principles content (optionally a single section).
+
+    `include_body=true`: returns full markdown body.
+    `section=5.19`: returns just the section starting with "### 5.19".
+
+    Without either flag, returns the front-matter summary only.
+    """
+    import re
+    from pathlib import Path
+
+    canon_path = (
+        Path(__file__).resolve().parent.parent
+        / "drift_sentinel" / "GIGATON_CANONICAL_FIRST_PRINCIPLES.md"
+    )
+    if not canon_path.exists():
+        raise HTTPException(status_code=404, detail="canonical doc not found")
+    text = canon_path.read_text(encoding="utf-8")
+    out = {
+        "path": "drift_sentinel/GIGATON_CANONICAL_FIRST_PRINCIPLES.md",
+    }
+    if section:
+        # Match `### <section>` at the start of a line, capture until the next
+        # `### ` heading (or end of doc).
+        pattern = r"^### " + re.escape(section) + r"[\s\S]*?(?=^### |\Z)"
+        m = re.search(pattern, text, re.MULTILINE)
+        if m is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"section {section!r} not found in canonical doc",
+            )
+        out["section"] = section
+        out["body"] = m.group(0).rstrip()
+        return out
+    if include_body:
+        out["body"] = text
+        return out
+    # Summary mode: first 30 lines
+    out["preview"] = "\n".join(text.splitlines()[:30])
+    out["size_bytes"] = len(text.encode("utf-8"))
+    return out
