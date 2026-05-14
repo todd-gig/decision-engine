@@ -11,6 +11,12 @@ Usage:
     python cli.py codification-sweep      # Run analyzer + readiness gate; open ready proposals
     python cli.py override-sweep [--days N] [--dry-run]
                                           # Run nightly human-override pattern sweep
+    python cli.py bootstrap-sources [--all | --source NAME] [--dry-run]
+                                          # Idempotently register canonical OutcomeSources
+                                          # (Carmen Beach revenue, Ti Solutions conversions,
+                                          #  Gigaton-UI usage)
+    python cli.py backfill-carmen-beach --csv <path> [--direct] [--dry-run]
+                                          # One-time CSV-driven STVR revenue backfill
 """
 
 import sys
@@ -186,6 +192,27 @@ def cmd_override_sweep(args: list[str]):
     print(json.dumps(summary, indent=2))
 
 
+def cmd_bootstrap_sources(args: list[str]):
+    """Idempotently register canonical OutcomeSources.
+
+    Delegates to `scripts.bootstrap_outcome_sources.main(...)` so the CLI
+    + standalone module entry share one argument parser + exit shape.
+    """
+    from scripts.bootstrap_outcome_sources import main as _bootstrap_main
+    sys.exit(_bootstrap_main(args))
+
+
+def cmd_backfill_carmen_beach(args: list[str]):
+    """One-time CSV-driven Carmen Beach STVR revenue backfill.
+
+    Delegates to `scripts.backfill_carmen_beach_revenue.main(...)`. Per
+    Non-Negotiable #6, this never synthesizes rows — only what's in the
+    CSV gets emitted.
+    """
+    from scripts.backfill_carmen_beach_revenue import main as _backfill_main
+    sys.exit(_backfill_main(args))
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -210,6 +237,10 @@ def main():
         cmd_codification_sweep()
     elif command == "override-sweep":
         cmd_override_sweep(sys.argv[2:])
+    elif command == "bootstrap-sources":
+        cmd_bootstrap_sources(sys.argv[2:])
+    elif command == "backfill-carmen-beach":
+        cmd_backfill_carmen_beach(sys.argv[2:])
     else:
         print(f"Unknown command: {command}")
         print(__doc__)
