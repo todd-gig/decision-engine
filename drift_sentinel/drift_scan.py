@@ -1977,6 +1977,175 @@ def _check_cloud_sql_url_discipline(
     return violations
 
 
+def _check_cloudbuild_trigger_invariant(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-022: Engine repo with `cloudbuild.yaml` + `Dockerfile` at root
+    deploys to Cloud Run, so a Cloud Build trigger MUST be documented
+    via `deploy/CLOUDBUILD_TRIGGER*.md` (and, in live mode, must exist
+    as `<repo>-push-to-main` in the target GCP project).
+
+    WHY: 2026-05-14 audit Drift #11 + #13 — `gcloud builds triggers list
+    --project=gigaton-platform` returned 0 items. All four platform
+    engines (gigaton-gateway, human-management-engine, user-access-engine,
+    ppeme) deployed via manual `gcloud builds submit`. Memories claimed
+    push-to-main auto-deploys; reality was no automation existed. This
+    rule makes the gap visible the moment a new engine repo lands a
+    cloudbuild.yaml without a corresponding trigger doc.
+
+    Heuristic (static mode, always on):
+      - Trigger only on the artifact `<repo>/cloudbuild.yaml` (root-level
+        Cloud Build config; sibling job configs like
+        `cloudbuild-job-*.yaml` are skipped — they document Cloud Run
+        Jobs that are typically invoked on schedule, not push).
+      - Resolve repo root via DRIFT_LOCAL_CODEBASE_ROOT (default
+        /Users/admin/Documents/GitHub) + the artifact identifier's
+        first path segment.
+      - Skip if no sibling `Dockerfile` exists (build-only / library
+        repo — not a Cloud Run service).
+      - Skip if the artifact is the drift-sentinel's own deploy/
+        cloudbuild.yaml or any nested `deploy/**/cloudbuild.yaml`
+        (drift-sentinel has its own well-documented invocation pattern;
+        it lives inside another repo and isn't a standalone engine).
+      - Pass if `<repo>/deploy/` contains any file whose name matches
+        the glob `*trigger*.md` (case-insensitive — accepts
+        CLOUDBUILD_TRIGGER.md, CLOUDBUILD_TRIGGERS.md (plural), and the
+        all-lowercase cloudbuild_trigger.md).
+      - Otherwise fire one MAJOR violation.
+
+    Heuristic (live mode, opt-in via env var):
+      - Enabled when `DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK=1` AND the
+        Python library `google.cloud.devtools.cloudbuild_v1` is
+        importable. Project defaults to `gigaton-platform`, overridable
+        via `DRIFT_GCP_PROJECT`; region defaults to `us-central1`,
+        overridable via `DRIFT_GCP_REGION`.
+      - Calls `triggers.list_build_triggers` and checks whether any
+        trigger's name equals `<repo>-push-to-main`.
+      - On lib-missing OR API failure (auth / permission), emit a
+        warning to stderr and fall back to static logic.
+      - Live-mode violations carry metadata `live_check=true` in
+        excerpt for downstream diagnostics.
+
+      `# noqa: MAJ-022` anywhere in cloudbuild.yaml suppresses.
+    """
+    name = Path(art.identifier).name
+    if name != "cloudbuild.yaml":
+        return []
+    if art.metadata.get("ext") not in {".yaml", ".yml"}:
+        return []
+    if "noqa: MAJ-022" in art.content:
+        return []
+
+    github_root = Path(
+        os.environ.get("DRIFT_LOCAL_CODEBASE_ROOT",
+                       "/Users/admin/Documents/GitHub")
+    )
+    parts = Path(art.identifier).parts
+    if not parts:
+        return []
+    # Skip nested cloudbuild.yaml files (e.g. drift_sentinel/deploy/gcp/
+    # cloudbuild.yaml lives under decision-engine — that's a sub-resource
+    # build config, not the top-of-repo deploy config).
+    if len(parts) != 2:
+        return []
+    repo_name = parts[0]
+    repo_root = github_root / repo_name
+
+    if not (repo_root / "Dockerfile").exists():
+        return []
+
+    # Static check — accept any case variant of *trigger*.md under deploy/
+    deploy_dir = repo_root / "deploy"
+    has_trigger_doc = False
+    if deploy_dir.is_dir():
+        for entry in deploy_dir.iterdir():
+            if entry.is_file() and entry.suffix.lower() == ".md" and \
+                    "trigger" in entry.stem.lower():
+                has_trigger_doc = True
+                break
+
+    # Live check (opt-in)
+    live_enabled = os.environ.get(
+        "DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK") == "1"
+    live_trigger_found: bool | None = None  # None = not checked
+    live_diag: str = ""
+    if live_enabled:
+        try:
+            from google.cloud.devtools import cloudbuild_v1  # type: ignore
+        except ImportError:
+            sys.stderr.write(
+                "MAJ-022 live check requested but "
+                "google.cloud.devtools.cloudbuild_v1 is not installed; "
+                "falling back to static check\n"
+            )
+        else:
+            project = os.environ.get(
+                "DRIFT_GCP_PROJECT", "gigaton-platform")
+            region = os.environ.get(
+                "DRIFT_GCP_REGION", "us-central1")
+            try:
+                client = cloudbuild_v1.CloudBuildClient()
+                parent = f"projects/{project}/locations/{region}"
+                expected = f"{repo_name}-push-to-main"
+                live_trigger_found = False
+                for trig in client.list_build_triggers(parent=parent):
+                    if getattr(trig, "name", "") == expected:
+                        live_trigger_found = True
+                        break
+                if not live_trigger_found:
+                    live_diag = (
+                        f"no trigger named '{expected}' found in "
+                        f"{parent}"
+                    )
+            except (OSError, ValueError, RuntimeError) as exc:
+                # Auth / network / quota failure — log and fall back.
+                sys.stderr.write(
+                    f"MAJ-022 live check error for {repo_name}: "
+                    f"{exc}; falling back to static check\n"
+                )
+                live_trigger_found = None  # treat as not-checked
+
+    # Decision matrix:
+    #   - If live check was enabled, conclusive, AND found trigger → pass
+    #     even if static doc missing (the trigger is real).
+    #   - If live check was enabled, conclusive, AND no trigger → fire,
+    #     regardless of static doc.
+    #   - Otherwise (live check not run / inconclusive) → static check
+    #     decides.
+    if live_trigger_found is True:
+        return []
+    if live_trigger_found is False:
+        return [Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=art.identifier,
+            excerpt=(
+                f"engine repo `{repo_name}` deploys via cloudbuild.yaml "
+                f"but live_check=true reports {live_diag} — push-to-main "
+                f"auto-deploy is not configured (Drift #11+#13, "
+                f"2026-05-14)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        )]
+    # Static-only path
+    if has_trigger_doc:
+        return []
+    return [Violation(
+        rule_id=rule["id"],
+        severity=rule["severity"],
+        artifact=art.identifier,
+        location=art.identifier,
+        excerpt=(
+            f"engine repo `{repo_name}` has cloudbuild.yaml + Dockerfile "
+            f"but no deploy/*TRIGGER*.md — Cloud Build trigger is "
+            f"undocumented and any 'auto-deploy' claim is unverifiable "
+            f"(Drift #11+#13, 2026-05-14)"
+        ),
+        suggested_fix=rule.get("remediation", ""),
+    )]
+
+
 def _check_engine_module_missing_penrose_signal(
     art: Artifact, rule: dict
 ) -> list[Violation]:
@@ -2540,6 +2709,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-019": _check_engine_module_missing_penrose_signal,
     "MAJ-020": _check_dockerfile_alembic_discipline,
     "MAJ-021": _check_cloud_sql_url_discipline,
+    "MAJ-022": _check_cloudbuild_trigger_invariant,
     "MAJ-006": _check_schema_without_migration,
     "MAJ-009": _check_phase_gate_violation,
     "MAJ-010": _check_value_chain_break,

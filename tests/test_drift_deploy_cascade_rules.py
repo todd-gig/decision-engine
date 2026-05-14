@@ -25,6 +25,7 @@ sys.path.insert(0, str(_HERE.parent / "drift_sentinel"))
 from drift_scan import (  # noqa: E402
     Artifact,
     _check_cloudbuild_secret_env_in_non_bash_step,
+    _check_cloudbuild_trigger_invariant,
     _check_cloud_sql_url_discipline,
     _check_cloudrun_runtime_sa_missing_cloudsql_client,
     _check_cloudsql_password_drift_between_instance_and_secret,
@@ -55,6 +56,11 @@ _MAJ_021_RULE = {
     "id": "MAJ-021",
     "severity": "major",
     "remediation": "Use URL.create(..., query={'host': socket}) for Cloud SQL.",
+}
+_MAJ_022_RULE = {
+    "id": "MAJ-022",
+    "severity": "major",
+    "remediation": "Document via deploy/CLOUDBUILD_TRIGGER.md + create the GCP trigger.",
 }
 
 
@@ -624,3 +630,293 @@ def normalize_dsn(dsn: str) -> str:
     return dsn
 '''
     assert _check_cloud_sql_url_discipline(_py(code), _MAJ_021_RULE) == []
+
+
+# ---------------------------------------------------------------------------
+# MAJ-022 — Cloud Build trigger invariant
+# ---------------------------------------------------------------------------
+
+
+def _cloudbuild_repo_fixture(
+    github_root: Path,
+    name: str,
+    *,
+    with_cloudbuild: bool = True,
+    with_dockerfile: bool = True,
+    trigger_doc_name: str | None = None,
+) -> Artifact:
+    """Create a synthetic engine repo under ``github_root/<name>`` with the
+    requested cloudbuild.yaml + Dockerfile + deploy/ trigger-doc shape.
+    Returns the cloudbuild.yaml Artifact (the rule's anchor).
+
+    When ``trigger_doc_name`` is None, no trigger doc is written.
+    When set to a string, the file is created under ``<repo>/deploy/``.
+    """
+    repo_root = github_root / name
+    repo_root.mkdir(parents=True, exist_ok=True)
+    if with_cloudbuild:
+        (repo_root / "cloudbuild.yaml").write_text(
+            "steps:\n  - name: gcr.io/cloud-builders/docker\n")
+    if with_dockerfile:
+        (repo_root / "Dockerfile").write_text(
+            "FROM python:3.11-slim\nCMD ['true']\n")
+    if trigger_doc_name is not None:
+        deploy_dir = repo_root / "deploy"
+        deploy_dir.mkdir(exist_ok=True)
+        (deploy_dir / trigger_doc_name).write_text(
+            "# Trigger codification\nSee gigaton-gateway template.\n")
+    content = (repo_root / "cloudbuild.yaml").read_text() if with_cloudbuild \
+        else ""
+    return Artifact(
+        source="codebase",
+        identifier=f"{name}/cloudbuild.yaml",
+        artifact_type="config",
+        content=content,
+        metadata={"ext": ".yaml", "repo": name},
+    )
+
+
+def test_maj022_passes_when_trigger_doc_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "gateway-like",
+        trigger_doc_name="CLOUDBUILD_TRIGGER.md",
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_fires_when_no_trigger_doc(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "uae-like",
+        trigger_doc_name=None,
+    )
+    violations = _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE)
+    assert len(violations) == 1
+    assert violations[0].rule_id == "MAJ-022"
+    assert violations[0].severity == "major"
+    assert "uae-like" in violations[0].excerpt
+
+
+def test_maj022_na_without_cloudbuild_yaml(tmp_path, monkeypatch):
+    """No cloudbuild.yaml at root → rule does not apply (artifact wouldn't
+    even reach the handler since `name != cloudbuild.yaml`)."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = Artifact(
+        source="codebase",
+        identifier="lib-only-repo/pyproject.toml",
+        artifact_type="config",
+        content="[project]\nname = 'lib-only-repo'\n",
+        metadata={"ext": ".toml", "repo": "lib-only-repo"},
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_passes_with_plural_triggers_doc(tmp_path, monkeypatch):
+    """Accept `CLOUDBUILD_TRIGGERS.md` (plural)."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "plural-like",
+        trigger_doc_name="CLOUDBUILD_TRIGGERS.md",
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_passes_with_lowercase_trigger_doc(tmp_path, monkeypatch):
+    """Accept `cloudbuild_trigger.md` (lowercase)."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "lowercase-like",
+        trigger_doc_name="cloudbuild_trigger.md",
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_skips_repo_without_dockerfile(tmp_path, monkeypatch):
+    """A cloudbuild.yaml without a Dockerfile is build-only / cron job
+    pattern, not a Cloud Run service deploy — rule N/A."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "job-only-repo",
+        with_dockerfile=False,
+        trigger_doc_name=None,
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_honors_noqa_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    repo_root = tmp_path / "exempt-engine"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    cloudbuild_content = (
+        "# noqa: MAJ-022 - legacy engine, trigger deferred to Q3\n"
+        "steps:\n  - name: gcr.io/cloud-builders/docker\n"
+    )
+    (repo_root / "cloudbuild.yaml").write_text(cloudbuild_content)
+    (repo_root / "Dockerfile").write_text("FROM python:3.11-slim\n")
+    art = Artifact(
+        source="codebase",
+        identifier="exempt-engine/cloudbuild.yaml",
+        artifact_type="config",
+        content=cloudbuild_content,
+        metadata={"ext": ".yaml", "repo": "exempt-engine"},
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_skips_nested_cloudbuild_yaml(tmp_path, monkeypatch):
+    """A nested `deploy/gcp/cloudbuild.yaml` (drift-sentinel pattern) is a
+    sub-resource build config, not a repo-level deploy. Identifier has
+    >2 segments → rule does not apply."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    repo_root = tmp_path / "decision-engine"
+    (repo_root / "drift_sentinel" / "deploy" / "gcp").mkdir(parents=True)
+    nested = (repo_root / "drift_sentinel" / "deploy" / "gcp" /
+              "cloudbuild.yaml")
+    nested.write_text("steps: []\n")
+    art = Artifact(
+        source="codebase",
+        identifier="decision-engine/drift_sentinel/deploy/gcp/cloudbuild.yaml",
+        artifact_type="config",
+        content="steps: []\n",
+        metadata={"ext": ".yaml", "repo": "decision-engine"},
+    )
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_live_check_disabled_uses_static_logic(tmp_path, monkeypatch):
+    """With live check OFF, missing trigger doc fires regardless of any
+    real GCP state."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.delenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", raising=False)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "static-only", trigger_doc_name=None,
+    )
+    violations = _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE)
+    assert len(violations) == 1
+    assert "no deploy/*TRIGGER*.md" in violations[0].excerpt
+
+
+def test_maj022_live_check_enabled_lib_missing_falls_back_to_static(
+    tmp_path, monkeypatch,
+):
+    """Live check requested but google.cloud.devtools.cloudbuild_v1 is
+    not installed → emit warning, fall back to static check."""
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.setenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", "1")
+    import sys as _sys
+    for mod in [k for k in list(_sys.modules)
+                if k.startswith("google.cloud.devtools")]:
+        _sys.modules.pop(mod, None)
+    monkeypatch.setitem(_sys.modules,
+                        "google.cloud.devtools.cloudbuild_v1", None)
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "live-no-lib",
+        trigger_doc_name=None,
+    )
+    violations = _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE)
+    assert len(violations) == 1
+    assert violations[0].rule_id == "MAJ-022"
+    # Live branch must have bailed before producing a live_check diag.
+    assert "live_check=true" not in violations[0].excerpt
+
+
+def test_maj022_live_check_enabled_trigger_found_passes(
+    tmp_path, monkeypatch,
+):
+    """Live check ON + lib present + trigger found → pass even if static
+    doc is missing. Stub the cloudbuild_v1 module."""
+    import sys as _sys
+    import types
+
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.setenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", "1")
+    monkeypatch.setenv("DRIFT_GCP_PROJECT", "gigaton-platform")
+    monkeypatch.setenv("DRIFT_GCP_REGION", "us-central1")
+
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "live-found", trigger_doc_name=None,
+    )
+
+    class _StubTrigger:
+        def __init__(self, name): self.name = name
+
+    class _StubClient:
+        def list_build_triggers(self, parent):
+            return [_StubTrigger("live-found-push-to-main"),
+                    _StubTrigger("other-repo-push-to-main")]
+
+    stub_cbv1 = types.ModuleType("cloudbuild_v1")
+    stub_cbv1.CloudBuildClient = lambda: _StubClient()  # type: ignore
+    stub_devtools = types.ModuleType("google.cloud.devtools")
+    stub_devtools.cloudbuild_v1 = stub_cbv1  # type: ignore
+    stub_google_cloud = types.ModuleType("google.cloud")
+    stub_google_cloud.devtools = stub_devtools  # type: ignore
+    stub_google = _sys.modules.get("google") or types.ModuleType("google")
+    stub_google.cloud = stub_google_cloud  # type: ignore
+
+    monkeypatch.setitem(_sys.modules, "google", stub_google)
+    monkeypatch.setitem(_sys.modules, "google.cloud", stub_google_cloud)
+    monkeypatch.setitem(_sys.modules,
+                        "google.cloud.devtools", stub_devtools)
+    monkeypatch.setitem(_sys.modules,
+                        "google.cloud.devtools.cloudbuild_v1", stub_cbv1)
+
+    assert _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE) == []
+
+
+def test_maj022_live_check_enabled_trigger_missing_fires(
+    tmp_path, monkeypatch,
+):
+    """Live check ON + lib present + trigger NOT found → fire with the
+    live_check diagnostic, regardless of static doc presence."""
+    import sys as _sys
+    import types
+
+    monkeypatch.setenv("DRIFT_LOCAL_CODEBASE_ROOT", str(tmp_path))
+    monkeypatch.setenv("DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK", "1")
+    monkeypatch.setenv("DRIFT_GCP_PROJECT", "gigaton-platform")
+    monkeypatch.setenv("DRIFT_GCP_REGION", "us-central1")
+
+    # Note: static doc is PRESENT, but live mode is authoritative.
+    art = _cloudbuild_repo_fixture(
+        tmp_path, "live-missing",
+        trigger_doc_name="CLOUDBUILD_TRIGGER.md",
+    )
+
+    class _StubTrigger:
+        def __init__(self, name): self.name = name
+
+    class _StubClient:
+        def list_build_triggers(self, parent):
+            return [_StubTrigger("some-other-trigger")]
+
+    stub_cbv1 = types.ModuleType("cloudbuild_v1")
+    stub_cbv1.CloudBuildClient = lambda: _StubClient()  # type: ignore
+    stub_devtools = types.ModuleType("google.cloud.devtools")
+    stub_devtools.cloudbuild_v1 = stub_cbv1  # type: ignore
+    stub_google_cloud = types.ModuleType("google.cloud")
+    stub_google_cloud.devtools = stub_devtools  # type: ignore
+    stub_google = _sys.modules.get("google") or types.ModuleType("google")
+    stub_google.cloud = stub_google_cloud  # type: ignore
+
+    monkeypatch.setitem(_sys.modules, "google", stub_google)
+    monkeypatch.setitem(_sys.modules, "google.cloud", stub_google_cloud)
+    monkeypatch.setitem(_sys.modules,
+                        "google.cloud.devtools", stub_devtools)
+    monkeypatch.setitem(_sys.modules,
+                        "google.cloud.devtools.cloudbuild_v1", stub_cbv1)
+
+    violations = _check_cloudbuild_trigger_invariant(art, _MAJ_022_RULE)
+    assert len(violations) == 1
+    assert violations[0].rule_id == "MAJ-022"
+    assert "no trigger named" in violations[0].excerpt
+    assert "live-missing-push-to-main" in violations[0].excerpt

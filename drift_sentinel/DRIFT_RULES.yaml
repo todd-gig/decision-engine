@@ -708,6 +708,83 @@ rules:
         fi
         exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8080}"
 
+  - id: MAJ-022
+    name: cloudbuild_trigger_invariant
+    principle_ref: §7 (CI/CD discipline), standard_engine_deploy_template.md §5
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Every engine repo that ships a `cloudbuild.yaml` at its root (the
+        signal that it deploys to Cloud Run) MUST document its Cloud Build
+        trigger so push-to-main auto-deploy is real, not aspirational.
+        Either the repo carries `deploy/CLOUDBUILD_TRIGGER.md` (or any
+        case-insensitive variant of `deploy/*TRIGGER*.md`, including the
+        plural `CLOUDBUILD_TRIGGERS.md`) AND/OR a live
+        `${repo}-push-to-main` Cloud Build trigger exists in the project.
+
+        WHY: 2026-05-14 audit (Drift #11 + #13) discovered that
+        `gcloud builds triggers list --project=gigaton-platform` returned
+        ZERO items across all four platform engines (gigaton-gateway,
+        human-management-engine, user-access-engine, ppeme). Every
+        "auto-deploy" memory claim was actually a manual
+        `gcloud builds submit` invocation from a human shell. The cure
+        (one-time) is a browser-OAuth GitHub App connect + 4 trigger
+        creates. The prevention (forever) is this rule.
+
+        Modes:
+          - Static (default): repo with `cloudbuild.yaml` in root AND
+            `Dockerfile` in root (= deploys to Cloud Run) MUST also have
+            `deploy/CLOUDBUILD_TRIGGER*.md` (any case). Repos lacking
+            `cloudbuild.yaml` are N/A; repos with `cloudbuild.yaml` but no
+            `Dockerfile` (build-only / cron Job patterns) are N/A.
+          - Live (env-gated `DRIFT_CLOUDBUILD_TRIGGER_LIVE_CHECK=1`):
+            additionally calls `cloudbuild_v1.list_triggers` against
+            `${DRIFT_GCP_PROJECT}` and verifies a trigger matching
+            `<repo>-push-to-main` exists. If `google.cloud.devtools.cloudbuild_v1`
+            is not importable, the live check is silently skipped and the
+            rule falls back to static-only logic. The Cloud Run Job
+            runtime SA in `carmen-beach-properties` does NOT have
+            cross-project Cloud Build read on `gigaton-platform`, so live
+            mode is opt-in and intended for local invocation only.
+
+        Fires on:
+          - Repo has `cloudbuild.yaml` + `Dockerfile` at root, but no
+            `deploy/CLOUDBUILD_TRIGGER*.md` anywhere under `deploy/`.
+          - Live mode on + lib available + no trigger named
+            `<repo>-push-to-main` returned by the project list.
+      patterns:
+        - 'cloudbuild\.yaml$'
+      negative_signal: |
+        Check the repo root for `cloudbuild.yaml` AND `Dockerfile`. If
+        both present, search `<repo>/deploy/` for any file whose name
+        matches `*trigger*.md` (case-insensitive). If found, pass. If
+        not, fire. Live mode additionally verifies the project actually
+        has the trigger registered.
+    remediation: |
+      Per standard_engine_deploy_template.md §5 and the canonical doc
+      at gigaton-gateway/deploy/CLOUDBUILD_TRIGGER.md (PR #14):
+
+        1. Create deploy/CLOUDBUILD_TRIGGER.md in the engine repo using
+           the gateway's doc as template. It must capture: current vs.
+           target state, the gcloud trigger spec, why the trigger create
+           is gated on a one-time browser-OAuth (GitHub App connect), and
+           the exact `gcloud builds triggers create github ...` command.
+        2. Have a human visit
+           https://console.cloud.google.com/cloud-build/triggers?project=gigaton-platform
+           and connect the repo via the GitHub App (browser only — no
+           gcloud equivalent exists).
+        3. Create the trigger:
+             gcloud builds triggers create github \
+               --name=<repo>-push-to-main \
+               --repo-owner=todd-gig --repo-name=<repo> \
+               --branch-pattern='^main$' \
+               --build-config=cloudbuild.yaml \
+               --region=us-central1 \
+               --project=gigaton-platform
+        4. Push a noop commit to main and verify the trigger fires.
+
   - id: MAJ-021
     name: cloud_sql_url_discipline
     principle_ref: §6, §7, standard_engine_deploy_template.md §3
@@ -972,8 +1049,15 @@ source_routing:
       - admin-turtleisland
       - bella-byte
       - playa-del-carmen
+      # Platform engines (added 2026-05-14 alongside MAJ-022) — these
+      # repos all ship a cloudbuild.yaml + Dockerfile and deploy to
+      # gigaton-platform Cloud Run.
+      - gigaton-gateway
+      - human-management-engine
+      - user-access-engine
+      - ppeme
     skip_dirs: [node_modules, __pycache__, .git, .next, dist, build, .turbo]
-    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MAJ-013, MAJ-014, MAJ-015, MAJ-019, MAJ-020, MAJ-021, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
+    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MAJ-013, MAJ-014, MAJ-015, MAJ-019, MAJ-020, MAJ-021, MAJ-022, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
 
   local_docs:
     root: /Users/admin/Downloads
