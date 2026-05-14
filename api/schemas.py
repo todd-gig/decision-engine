@@ -271,3 +271,31 @@ class AIInvokeRequest(BaseModel):
     fallback_chain: Optional[list[str]] = None
     timeout_seconds: int = Field(default=30, ge=1, le=300)
     audit_metadata: Optional[dict] = None
+
+
+# ── Codification sweep + approval ───────────────────────────────────────────
+
+
+class SweepRunRequest(BaseModel):
+    """POST /v1/codification/sweep — run analyzer + readiness + open proposals."""
+    min_volume: int = Field(default=50, ge=1)
+    score_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    audit_db_path: Optional[str] = None
+    proposals_db_path: Optional[str] = None
+    open_proposals: bool = True
+    why: str = Field(default="scheduled codification sweep")
+
+
+class ProposalApproveAndCertifyRequest(BaseModel):
+    """POST /v1/proposals/{id}/approve-and-certify — auth-gated approval +
+    HMAC-signed CodificationCertificate."""
+    approver_user_id: str = Field(..., min_length=1)
+    approval_why: str = Field(..., min_length=20)   # always-record-WHY
+    new_status: str = Field(..., min_length=1)      # approved_ship | approved_fallback
+    decision_class: str = Field(..., min_length=1)  # new-module | tuning | doctrine-touching
+    evidence_decision_ids: list[str] = Field(default_factory=list)
+    proposed_spec: str = Field(..., min_length=1)
+    prompt_version: str = Field(..., min_length=1)
+    schema_version: str = Field(..., min_length=1)
+    additional_signers: list[str] = Field(default_factory=list)
+    shipped_pr_url: Optional[str] = None

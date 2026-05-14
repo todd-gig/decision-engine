@@ -8,6 +8,7 @@ Usage:
     python cli.py process <payload.json>  # Process a single decision from JSON file
     python cli.py learning-summary        # Print institutional learning summary
     python cli.py seed-certs              # Seed trust certificates to memory/certs/
+    python cli.py codification-sweep      # Run analyzer + readiness gate; open ready proposals
 """
 
 import sys
@@ -127,6 +128,36 @@ def cmd_seed_certs():
     seed_main()
 
 
+def cmd_codification_sweep():
+    """Run the codification sweep — analyzer + readiness + open ready proposals.
+
+    Schedule pattern matches HME's weekly initiative report fire — this CLI
+    is the entrypoint Cloud Scheduler hits (or operators run manually).
+    """
+    from engine.codification import run_sweep
+    # Parse optional flags after the subcommand. Accepted forms:
+    #   python cli.py codification-sweep
+    #   python cli.py codification-sweep --no-open
+    #   python cli.py codification-sweep --min-volume=50 --score-threshold=0.7
+    args = sys.argv[2:]
+    kwargs: dict = {}
+    for a in args:
+        if a == "--no-open":
+            kwargs["open_proposals"] = False
+        elif a.startswith("--min-volume="):
+            kwargs["min_volume"] = int(a.split("=", 1)[1])
+        elif a.startswith("--score-threshold="):
+            kwargs["score_threshold"] = float(a.split("=", 1)[1])
+        elif a.startswith("--why="):
+            kwargs["why"] = a.split("=", 1)[1]
+        elif a.startswith("--audit-db="):
+            kwargs["audit_db_path"] = a.split("=", 1)[1]
+        elif a.startswith("--proposals-db="):
+            kwargs["proposals_db_path"] = a.split("=", 1)[1]
+    report = run_sweep(**kwargs)
+    print(json.dumps(report.to_dict(), indent=2))
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -147,6 +178,8 @@ def main():
         cmd_learning_summary()
     elif command == "seed-certs":
         cmd_seed_certs()
+    elif command == "codification-sweep":
+        cmd_codification_sweep()
     else:
         print(f"Unknown command: {command}")
         print(__doc__)

@@ -33,6 +33,7 @@ from .schemas import (
     OutcomeRequest, PipelineResponse, AuditEntry,
     OverrideRecordRequest, ProposalCreateRequest, ProposalApproveRequest,
     ProposalSimSummary, AnalyzerRunRequest, AIInvokeRequest,
+    SweepRunRequest, ProposalApproveAndCertifyRequest,
 )
 
 router = APIRouter()
@@ -714,3 +715,58 @@ def doctrine_body(
     out["preview"] = "\n".join(text.splitlines()[:30])
     out["size_bytes"] = len(text.encode("utf-8"))
     return out
+
+
+# ── Codification sweep + approval ───────────────────────────────────────────
+
+
+@router.post("/v1/codification/sweep")
+def codification_sweep(payload: SweepRunRequest):
+    """Run the scheduled codification sweep — analyzer + readiness gate +
+    auto-open proposals for ready candidates. This is the entrypoint
+    Cloud Scheduler hits to close the Codification Rate flywheel.
+    """
+    from engine.codification import run_sweep
+    report = run_sweep(
+        min_volume=payload.min_volume,
+        score_threshold=payload.score_threshold,
+        audit_db_path=payload.audit_db_path,
+        proposals_db_path=payload.proposals_db_path,
+        open_proposals=payload.open_proposals,
+        why=payload.why,
+    )
+    return report.to_dict()
+
+
+@router.post("/v1/proposals/{proposal_id}/approve-and-certify")
+def proposals_approve_and_certify(
+    proposal_id: str, payload: ProposalApproveAndCertifyRequest
+):
+    """Approve a proposal and mint the governing CodificationCertificate.
+
+    Authorization is enforced via the sign-off matrix:
+      - decision_class='new-module'         → todd@gigaton.ai required
+      - decision_class='tuning'             → matt@gigaton.ai required
+      - decision_class='doctrine-touching'  → both required (use additional_signers)
+    """
+    from engine.codification import approve_and_certify
+    try:
+        return approve_and_certify(
+            proposal_id,
+            approver_user_id=payload.approver_user_id,
+            approval_why=payload.approval_why,
+            new_status=payload.new_status,
+            decision_class=payload.decision_class,
+            evidence_decision_ids=payload.evidence_decision_ids,
+            proposed_spec=payload.proposed_spec,
+            prompt_version=payload.prompt_version,
+            schema_version=payload.schema_version,
+            additional_signers=payload.additional_signers,
+            shipped_pr_url=payload.shipped_pr_url,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
