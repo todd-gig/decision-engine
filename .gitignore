@@ -7,6 +7,7 @@ __pycache__/
 
 # Drift sentinel runtime state (do not commit — scan output + binary history)
 drift_sentinel/drift_history.db
+drift_sentinel/drift_history.db-*
 drift_sentinel/reports/
 
 # Human-override + codification SQLite runtime stores (per-engine, never commit)
