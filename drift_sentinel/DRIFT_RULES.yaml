@@ -159,6 +159,12 @@ rules:
     principle_ref: §5.19 (Business Field Theory canonical state vector)
     severity: critical
     scope: [codebase, markdown]
+    # Per-rule exclusion for self-test fixtures (same pattern as CRIT-011).
+    # The scanner should not flag its own anti-pattern fixtures. WHY: BFT
+    # test file demonstrates substituted state vectors in string literals
+    # to verify the scanner catches them.
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     detection:
       type: structural
       check: |
@@ -520,6 +526,8 @@ rules:
     principle_ref: §5.19 (BFT — forward simulation requires state)
     severity: major
     scope: [codebase, decision]
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     detection:
       type: structural
       check: |
@@ -551,6 +559,8 @@ rules:
     principle_ref: §5.19 (BFT — forecasts must carry distribution)
     severity: major
     scope: [codebase, decision, markdown]
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     detection:
       type: structural
       check: |
@@ -580,6 +590,8 @@ rules:
     principle_ref: §5.19 (BFT — pre-Mtheory non-authoritative)
     severity: major
     scope: [codebase, decision, markdown]
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     detection:
       type: structural
       check: |
@@ -807,6 +819,8 @@ rules:
     name: interaction_without_effect_vector
     principle_ref: §5.19 (BFT — interaction catalog completeness)
     severity: minor
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     severity_escalation:
       escalates_to: major
       after_days: 30
@@ -849,6 +863,8 @@ rules:
     principle_ref: §5.19 (BFT — interaction ranking requires cost)
     severity: minor
     scope: [codebase]
+    path_exclude:
+      - "tests/test_drift_bft_rules.py"
     detection:
       type: structural
       check: |

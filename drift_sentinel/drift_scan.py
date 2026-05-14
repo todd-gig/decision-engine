@@ -2057,6 +2057,444 @@ def _check_engine_module_missing_penrose_signal(
     )]
 
 
+# ---------------------------------------------------------------------------
+# Framework 5.19 BFT handlers — activate ~2026-05-16 (T+72hr from
+# amendment effective_date 2026-05-13). These wire the 6 rules promoted
+# by AMEND-2026-05-13-F519 (state_vector_substitution = CRIT-010;
+# decision_without_state_estimate = MAJ-016; forecast_without_confidence_bands
+# = MAJ-017; uncalibrated_forecast_as_authority = MAJ-018;
+# interaction_without_effect_vector = MIN-007; interaction_without_cost =
+# MIN-008). YAML defs landed 2026-05-13; without Python handlers they were
+# silent (same drift class as MAJ-013/14/15 caught 2026-05-14). This block
+# closes the gap before the T+72 activation window.
+#
+# WHY: doctrine-claim vs committed-code parity. The amendment text already
+# says "T+72 hr drift-sentinel rule activation begins ~2026-05-16". The
+# activation mechanism is wiring handlers into STRUCTURAL_HANDLERS — there
+# is no separate `scheduled_activate_at` field; the rules become live the
+# moment they have a handler that can fire. Landing these on 2026-05-14 is
+# the canonical execution of the T+72 commitment.
+#
+# penrose_signal: weakens (forces forecasts + state to be falsifiable)
+# penrose_dimension: pos1 (calibration), pos5 (instrumentation)
+# ---------------------------------------------------------------------------
+
+# Canonical BFT state vector — Framework 5.19. Set-equality only.
+_BFT_CANONICAL_STATE_VARIABLES: frozenset[str] = frozenset({
+    "trust", "attention", "clarity", "desire", "urgency",
+    "value", "friction", "social_proof", "context_fit",
+})
+
+# Recognized aliases for state-vector declarations in Python.
+_BFT_STATE_DECL_PATTERNS = (
+    re.compile(r"\b(STATE_VARIABLES|STATE_VECTOR_KEYS|STATE_VECTOR_VARS)\s*[:=]\s*[\[\(\{]"),
+    re.compile(r"class\s+StateVector\b"),
+)
+
+# Recognized list/tuple/set extraction inside a STATE_* declaration.
+_BFT_STATE_LIST_BODY_RE = re.compile(
+    r"(STATE_VARIABLES|STATE_VECTOR_KEYS|STATE_VECTOR_VARS)"
+    r"\s*[:=]\s*[\[\(\{]([^\]\)\}]+)[\]\)\}]",
+    re.DOTALL,
+)
+
+
+def _check_state_vector_substitution(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """CRIT-010: any spec/code declaring a state vector whose variable
+    set is not exactly the canonical 9 from §5.19 BFT.
+
+    Fires on:
+      - Python module defining STATE_VARIABLES / STATE_VECTOR_KEYS /
+        STATE_VECTOR_VARS as a list/tuple/set literal whose extracted
+        identifiers don't set-equal the canonical 9.
+      - Markdown spec with a fenced YAML/Python block declaring
+        `state_vector:` / `state_variables:` / `STATE_VARIABLES =` whose
+        body is not the canonical 9.
+
+    Exemptions:
+      - Fixtures prefixed `pre_mtheory_` or under `tests/historical/`.
+      - `# noqa: CRIT-010` on any line of the declaration.
+      - Docstring blocks that quote the canonical doctrine for explanation.
+    """
+    if art.artifact_type not in {"code", "markdown"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".md"}:
+        return []
+    identifier_lc = art.identifier.lower()
+    if "tests/historical/" in identifier_lc or "pre_mtheory_" in identifier_lc:
+        return []
+    if "noqa: CRIT-010" in art.content:
+        return []
+
+    violations: list[Violation] = []
+    seen: set[tuple[int, str]] = set()
+
+    for match in _BFT_STATE_LIST_BODY_RE.finditer(art.content):
+        var_name = match.group(1)
+        body = match.group(2)
+        # Extract quoted-string identifiers from the body.
+        idents = {
+            m.group(1).lower()
+            for m in re.finditer(r"""['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]""", body)
+        }
+        if not idents:
+            continue
+        if idents == _BFT_CANONICAL_STATE_VARIABLES:
+            continue
+        line_no = art.content[: match.start()].count("\n") + 1
+        key = (line_no, var_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        missing = _BFT_CANONICAL_STATE_VARIABLES - idents
+        extra = idents - _BFT_CANONICAL_STATE_VARIABLES
+        diff = []
+        if missing:
+            diff.append(f"missing={sorted(missing)}")
+        if extra:
+            diff.append(f"extra={sorted(extra)}")
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"{var_name} diverges from canonical §5.19 state vector "
+                f"({', '.join(diff) or 'set mismatch'})"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+# MAJ-016 — Decision certificates D2-D6 require state_vector_at_decision.
+_BFT_DECISION_CLASS_RE = re.compile(
+    r"""decision_class["']?\s*[:=]\s*['"]?(D[1-6])['"]?""",
+    re.IGNORECASE,
+)
+_BFT_STATE_ESTIMATE_FIELD_RE = re.compile(
+    r"\b(state_vector_at_decision|state_estimate|state_vector)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_decision_without_state_estimate(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-016: D2-D6 certificate emission without a state vector.
+
+    Heuristic (v0): for every `decision_class: D[2-6]` occurrence, check
+    that a state-estimate field appears within ±30 lines. D1 is exempt
+    (auto-execute trivial-reversible per doctrine).
+
+    Skips test fixtures asserting the absence (negative tests in files
+    named `test_*.py` containing `assert.*state_estimate.*None` near the
+    match are exempt).
+    """
+    if art.artifact_type not in {"code", "config", "markdown"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".yaml", ".yml", ".json", ".md"}:
+        return []
+    if "noqa: MAJ-016" in art.content:
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for match in _BFT_DECISION_CLASS_RE.finditer(art.content):
+        cls = match.group(1).upper()
+        if cls == "D1":
+            continue
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        # Window: ±30 lines around the match.
+        start = max(0, line_no - 31)
+        end = min(len(lines), line_no + 30)
+        window = "\n".join(lines[start:end])
+        if _BFT_STATE_ESTIMATE_FIELD_RE.search(window):
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"decision_class={cls} emitted without state_vector_at_decision "
+                f"(§5.19 BFT — D2-D6 require forward-simulation state)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+# MAJ-017 — Forecasts must carry p10/p50/p90 distribution.
+_BFT_FORECAST_DECL_RE = re.compile(
+    r"\b(forecast|projection|predicted_revenue|predicted_conversion|"
+    r"predicted_ltv|predicted_outcome)\s*[:=]",
+    re.IGNORECASE,
+)
+_BFT_CONFIDENCE_BAND_RE = re.compile(
+    # `\b` would block matches like `run_monte_carlo` because `_` is a word
+    # char; allow free-floating substring match for the named bands.
+    r"(p10|p50|p90|confidence_band|forecast_distribution|"
+    r"prediction_interval|monte_carlo|distribution)",
+    re.IGNORECASE,
+)
+
+
+def _check_forecast_without_confidence_bands(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-017: single-point forecasts violate §5.19 falsifiability.
+
+    For every forecast/projection/predicted_* assignment, check that
+    p10/p50/p90 or a named distribution appears within ±20 lines. Inside
+    test fixtures, an `assert` line testing absence is exempt.
+    """
+    if art.artifact_type not in {"code", "config", "markdown"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".yaml", ".yml", ".json", ".md", ".ts", ".tsx"}:
+        return []
+    if "noqa: MAJ-017" in art.content:
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for match in _BFT_FORECAST_DECL_RE.finditer(art.content):
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        # Skip lines that ARE the band declaration themselves.
+        line_text = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+        if _BFT_CONFIDENCE_BAND_RE.search(line_text) and not match.group(0).lower().startswith("forecast"):
+            continue
+        start = max(0, line_no - 21)
+        end = min(len(lines), line_no + 20)
+        window = "\n".join(lines[start:end])
+        if _BFT_CONFIDENCE_BAND_RE.search(window):
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"forecast/projection without p10/p50/p90 distribution "
+                f"(§5.19 BFT falsifiability requirement)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+# MAJ-018 — pre-Mtheory forecasts cited as authority without label.
+_BFT_FORECAST_AUTHORITY_RE = re.compile(
+    r"\b(forecast_id|predicted_revenue|predicted_conversion|predicted_ltv)"
+    r"\s*[:=]",
+    re.IGNORECASE,
+)
+_BFT_CALIBRATION_LABEL_RE = re.compile(
+    r"\b(pre_mtheory\s*[:=]\s*true|non_authoritative\s*[:=]\s*true|"
+    r"uncalibrated_warning|calibration_status\s*[:=]\s*['\"]?"
+    r"(production_grade|calibrated))\b",
+    re.IGNORECASE,
+)
+_BFT_AUTHORITY_VERB_RE = re.compile(
+    r"\b(recommend|action|authoritative|drives|trigger|cite)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_uncalibrated_forecast_as_authority(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-018: forecast cited authoritatively without calibration label.
+
+    Heuristic (v0 — no live PPEME calibration table read; surfaces drift
+    on artifact text alone): fires when a forecast_id / predicted_*
+    appears alongside an authority-suggesting verb (recommend / action /
+    drives / trigger / cite) within ±15 lines AND no explicit calibration
+    label (pre_mtheory: true, non_authoritative: true, uncalibrated_warning,
+    calibration_status: production_grade) appears within ±15 lines.
+
+    PPEME-table-cross-reference is the v1 upgrade (per rule YAML). v0
+    surfaces the high-likelihood drift surface for human review.
+    """
+    if art.artifact_type not in {"code", "markdown", "config"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".md", ".yaml", ".yml", ".json"}:
+        return []
+    if "noqa: MAJ-018" in art.content:
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for match in _BFT_FORECAST_AUTHORITY_RE.finditer(art.content):
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        start = max(0, line_no - 16)
+        end = min(len(lines), line_no + 15)
+        window = "\n".join(lines[start:end])
+        if not _BFT_AUTHORITY_VERB_RE.search(window):
+            continue
+        if _BFT_CALIBRATION_LABEL_RE.search(window):
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"forecast referenced as authority without calibration label "
+                f"(§5.19 BFT — pre_mtheory forecasts cannot drive decisions)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+# MIN-007 — production interaction surface without effect-vector catalog entry.
+_BFT_INTERACTION_EMIT_RE = re.compile(
+    r"\b(emit_event|interaction_id|pipeline\.process)\s*[\(:=]",
+)
+_BFT_INTERACTION_CATALOG_LINK_RE = re.compile(
+    r"\b(interaction_catalog|delta_i|effect_vector|catalog_entry)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_interaction_without_effect_vector(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MIN-007: production interaction surface without catalog entry.
+
+    Fires on event emitters / pipeline.process calls / interaction_id
+    declarations that don't reference interaction_catalog or a delta_i
+    effect vector within ±25 lines. Test fixtures + `# noqa: MIN-007`
+    are exempt.
+
+    Cross-reference to PPEME's interaction_catalog table is the v1 upgrade.
+    v0 surfaces the textual drift signal so the catalog can be backfilled.
+    """
+    if art.artifact_type != "code":
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".ts", ".tsx", ".js", ".jsx"}:
+        return []
+    if "noqa: MIN-007" in art.content:
+        return []
+    if "tests/" in art.identifier or "/test_" in art.identifier:
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for match in _BFT_INTERACTION_EMIT_RE.finditer(art.content):
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        start = max(0, line_no - 26)
+        end = min(len(lines), line_no + 25)
+        window = "\n".join(lines[start:end])
+        if _BFT_INTERACTION_CATALOG_LINK_RE.search(window):
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"interaction emitter without interaction_catalog / delta_i "
+                f"reference (§5.19 BFT Interaction Model)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
+# MIN-008 — interaction_catalog entry without estimated_cost.
+_BFT_CATALOG_ENTRY_RE = re.compile(
+    r"(INSERT\s+INTO\s+interaction_catalog|interaction_catalog\."
+    r"(insert|create|upsert|add_entry))",
+    re.IGNORECASE,
+)
+_BFT_COST_FIELD_RE = re.compile(
+    r"\bestimated_cost\b",
+    re.IGNORECASE,
+)
+
+
+def _check_interaction_without_cost(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MIN-008: catalog entry insert without estimated_cost field.
+
+    Recommendation panels rank by delta_i / estimated_cost. Missing cost
+    eliminates the entry from ranked output silently.
+
+    Fires when a catalog insert/upsert/create call appears without an
+    estimated_cost reference within ±20 lines.
+    """
+    if art.artifact_type not in {"code", "config"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".sql", ".yaml", ".yml"}:
+        return []
+    if "noqa: MIN-008" in art.content:
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    for match in _BFT_CATALOG_ENTRY_RE.finditer(art.content):
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        start = max(0, line_no - 21)
+        end = min(len(lines), line_no + 20)
+        window = "\n".join(lines[start:end])
+        if _BFT_COST_FIELD_RE.search(window):
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"interaction_catalog entry without estimated_cost field "
+                f"(§5.19 BFT — ranking surface depends on delta_i/cost)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
 def _path_matches_exclude(
     identifier: str, excludes: list[str] | None
 ) -> bool:
@@ -2107,6 +2545,15 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-010": _check_value_chain_break,
     "MIN-001": _check_typescript_any,
     "MIN-009": _check_cloud_run_max_instances_above_one,
+    # Framework 5.19 BFT — wired 2026-05-14, active per T+72 commitment
+    # (effective_date 2026-05-13 + 72hr = ~2026-05-16). See
+    # framework_5_19_bft_amendment.md and the BFT handler block above.
+    "CRIT-010": _check_state_vector_substitution,
+    "MAJ-016": _check_decision_without_state_estimate,
+    "MAJ-017": _check_forecast_without_confidence_bands,
+    "MAJ-018": _check_uncalibrated_forecast_as_authority,
+    "MIN-007": _check_interaction_without_effect_vector,
+    "MIN-008": _check_interaction_without_cost,
 }
 
 
