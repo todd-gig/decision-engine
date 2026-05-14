@@ -3,6 +3,11 @@
 v0 surface — the analyzer/proposer/simulator come later. This module
 ships the proposal store and the human-approval workflow that
 Founder/Owner UI consumes.
+
+v0.5: `approve_and_certify` mints a CodificationCertificate when an
+approver crosses the proposal into `approved_ship` / `approved_fallback`.
+Certificate generation is HMAC-signed + persisted with a matching .md
+file (see `engine/codification/certificate.py`).
 """
 from __future__ import annotations
 
@@ -178,3 +183,89 @@ def _to_dict_with_status(proposal: CodificationProposal, status: str) -> dict:
     body = asdict(proposal)
     body["queue_status"] = status
     return body
+
+
+# ── v0.5: approval that mints a CodificationCertificate ──────────────────
+
+
+def approve_and_certify(
+    proposal_id: str,
+    *,
+    approver_user_id: str,
+    approval_why: str,
+    new_status: str,
+    decision_class: str,
+    evidence_decision_ids: list[str],
+    proposed_spec: str,
+    prompt_version: str,
+    schema_version: str,
+    additional_signers: list[str] | None = None,
+    shipped_pr_url: str | None = None,
+    db_path: str | None = None,
+    secret_key: str | None = None,
+) -> dict:
+    """Approve a proposal AND mint the governing CodificationCertificate.
+
+    Authorization is enforced via `signoff.is_authorized` — if the approver
+    isn't in the canonical signer set for `decision_class`, this raises
+    `PermissionError`. Caller should map that to HTTP 403.
+
+    `additional_signers` lets the caller add co-signers (used for
+    `doctrine-touching` proposals where both founder + owner must sign).
+    """
+    # Local imports avoid circular surface at module import time.
+    from .signoff import is_authorized, required_signers, has_quorum
+    from .certificate import CodificationCertificate, persist_certificate
+
+    if new_status not in {
+        ProposalStatus.APPROVED_SHIP.value,
+        ProposalStatus.APPROVED_FALLBACK.value,
+    }:
+        raise ValueError(
+            "approve_and_certify is only for APPROVED_SHIP / APPROVED_FALLBACK; "
+            f"got {new_status!r}. Use approve_proposal() for rejections."
+        )
+
+    if not is_authorized(approver_user_id, decision_class):
+        raise PermissionError(
+            f"{approver_user_id!r} is not in the required signer set "
+            f"for decision_class={decision_class!r}; "
+            f"required={required_signers(decision_class)}"
+        )
+
+    signers = sorted({approver_user_id, *(additional_signers or [])})
+    if not has_quorum(signers, decision_class):
+        raise PermissionError(
+            f"signer set {signers!r} does not meet quorum for "
+            f"decision_class={decision_class!r}; "
+            f"required={required_signers(decision_class)}"
+        )
+
+    # Build + sign + persist certificate FIRST so the proposal flip
+    # never lacks a backing cert.
+    cert = CodificationCertificate(
+        candidate_id=proposal_id,
+        signers=signers,
+        decision_class=decision_class,
+        reasoning=approval_why,
+        evidence_decision_ids=list(evidence_decision_ids),
+        proposed_spec=proposed_spec,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+    )
+    cert.sign(secret_key)
+    persist_certificate(cert, db_path=db_path)
+
+    # Now flip the proposal. If this fails (e.g. already-decided), the
+    # certificate row is orphan but harmless — operators can re-approve
+    # against a fresh certificate. The DB cert table is append-only.
+    row = approve_proposal(
+        proposal_id,
+        approver_user_id=approver_user_id,
+        approval_why=approval_why,
+        new_status=new_status,
+        shipped_pr_url=shipped_pr_url,
+        db_path=db_path,
+    )
+    row["certificate"] = cert.to_dict()
+    return row
