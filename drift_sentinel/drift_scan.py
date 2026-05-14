@@ -70,7 +70,11 @@ class LocalCodebaseAdapter:
                  "build", ".turbo", ".venv", "venv", "generated",
                  "__generated__", ".cache", "coverage"}
     INCLUDE_EXT = {".ts", ".tsx", ".js", ".jsx", ".py", ".md", ".yaml",
-                   ".yml", ".json", ".prisma", ".sql"}
+                   ".yml", ".json", ".prisma", ".sql", ".sh"}
+    # Files with no extension that we still want to scan (Dockerfile, etc).
+    # Required for MAJ-020 (Dockerfile alembic discipline) and MAJ-013/14/15
+    # (cloudbuild + bootstrap script patterns).
+    INCLUDE_NAMES = {"Dockerfile"}
 
     def __init__(self, config: dict):
         self.root = Path(config["root"])
@@ -90,7 +94,9 @@ class LocalCodebaseAdapter:
         for path in repo.rglob("*"):
             if any(part in self.SKIP_DIRS for part in path.parts):
                 continue
-            if path.is_file() and path.suffix in self.INCLUDE_EXT:
+            if not path.is_file():
+                continue
+            if path.suffix in self.INCLUDE_EXT or path.name in self.INCLUDE_NAMES:
                 files.append(path)
         # mtime DESC, cap to budget
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -119,6 +125,12 @@ class LocalCodebaseAdapter:
             return "config"
         if path.suffix == ".prisma":
             return "schema"
+        # Dockerfile + shell scripts are deploy-adjacent code artifacts
+        # the MAJ-013/14/15/20 handlers need to inspect. Classify them
+        # as "config" so they fit existing `scope: [codebase]` rules
+        # (codebase scope expands to {code, config, schema}).
+        if path.name == "Dockerfile" or path.suffix == ".sh":
+            return "config"
         return "other"
 
 
@@ -1433,6 +1445,513 @@ def _check_cloud_run_max_instances_above_one(
     return violations
 
 
+def _check_cloudbuild_secret_env_in_non_bash_step(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-013: cloudbuild.yaml step uses `secretEnv:` but the step does
+    NOT run a shell (no `entrypoint: bash` and not a known bash-image).
+
+    WHY: Cloud Build substitutes `$$SECRET_NAME` only inside steps that
+    run a shell. Non-shell steps (exec-wrapper, raw gcloud, docker) get
+    the literal string `$SECRET_NAME` as the env value, silently breaking
+    auth. This is HME bug #5 from the 2026-05-13 cascade — the migrate
+    step using exec-wrapper passed `DB_PASSWORD` as an empty string,
+    triggering psycopg2 fallback to default unix socket.
+
+    Heuristic:
+      - Scan only YAML/YML files whose basename starts with `cloudbuild`
+        OR whose path matches `**/cloudbuild*.yaml`.
+      - For each YAML step (item under `steps:`), if a `secretEnv:` block
+        is present, the step must either:
+          (a) have `entrypoint: bash`, OR
+          (b) reference a documented bash-shell image (`alpine`, `bash`,
+              `busybox`, or `cloud-builders/docker` with explicit
+              `entrypoint: bash`), OR
+          (c) declare a `# noqa: MAJ-013` override on the line.
+      - Otherwise, fire.
+      - Step-level parsing is heuristic-driven (regex on indent blocks);
+        full YAML AST would be cleaner but pyyaml is already an import
+        and this rule is line-precision-tolerant.
+    """
+    if art.metadata.get("ext") not in {".yaml", ".yml"}:
+        return []
+    name_lower = Path(art.identifier).name.lower()
+    if not name_lower.startswith("cloudbuild"):
+        return []
+
+    lines = art.content.split("\n")
+    violations: list[Violation] = []
+    # Walk steps: find lines that begin a step (indent 2 + `- id:` or
+    # `- name:`). For each step, collect its block until next step start
+    # at the same indent level.
+    step_starts: list[int] = []
+    for i, line in enumerate(lines):
+        if re.match(r"^\s\s-\s+(id|name|entrypoint)\s*:", line):
+            step_starts.append(i)
+    if not step_starts:
+        return []
+    step_starts.append(len(lines))
+
+    for idx in range(len(step_starts) - 1):
+        start = step_starts[idx]
+        end = step_starts[idx + 1]
+        block = "\n".join(lines[start:end])
+        if not re.search(r"^\s+secretEnv\s*:", block, re.MULTILINE):
+            continue
+        # Is the step bash-shelled?
+        has_bash_entrypoint = bool(re.search(
+            r"^\s+entrypoint\s*:\s*['\"]?bash['\"]?",
+            block, re.MULTILINE,
+        ))
+        # Some configs use `args: -c` with implicit bash; accept that too.
+        # Skip if there's a noqa override anywhere in the step.
+        if "noqa: MAJ-013" in block:
+            continue
+        if has_bash_entrypoint:
+            continue
+        # Find the secretEnv line for accurate location reporting
+        m = re.search(r"^\s+secretEnv\s*:", block, re.MULTILINE)
+        offset = m.start() if m else 0
+        rel_line = block[:offset].count("\n")
+        line_no = start + rel_line + 1
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                "cloudbuild step uses secretEnv: but has no "
+                "`entrypoint: bash` — secrets pass as literal '$VAR' "
+                "to non-shell steps (HME bug #5, 2026-05-13)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+    return violations
+
+
+def _check_cloudsql_password_drift_between_instance_and_secret(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-014: Cloud SQL instance password and Secret Manager secret
+    value generated by SEPARATE `openssl rand` invocations.
+
+    WHY: PPEME bug from 2026-05-14 — two distinct `openssl rand -base64`
+    calls produced different passwords for the instance vs the secret,
+    causing FATAL `password authentication failed` at container startup.
+    Canonical pattern: generate the password ONCE into a shell variable,
+    reuse the same variable in both commands.
+
+    Heuristic:
+      - Apply to bootstrap scripts (`.sh`) and to SETUP/README .md docs.
+      - Find every `openssl rand` invocation.
+      - If a file contains BOTH `gcloud sql instances create` AND
+        `gcloud secrets create` for a `<...>-db-password`-named secret,
+        AND the password values used in each are produced by independent
+        `openssl rand` subshells (not the same shell variable), fire.
+      - Skip files with `# noqa: MAJ-014` near the openssl line.
+    """
+    ext = art.metadata.get("ext")
+    if ext not in {".sh", ".md", ".yaml", ".yml"}:
+        return []
+    content = art.content
+
+    # Must reference both: Cloud SQL instance creation AND db-password
+    # secret creation for any drift to be possible.
+    has_instance_create = bool(re.search(
+        r"gcloud\s+sql\s+instances\s+create\b", content,
+    ))
+    has_secret_create = bool(re.search(
+        r"gcloud\s+secrets\s+create\s+[\w-]*db-password\b", content,
+    ))
+    if not (has_instance_create and has_secret_create):
+        return []
+
+    # Count `openssl rand` subshells of the inline form `$(openssl rand`
+    # or `\`openssl rand\``. Treat assignments like `PW=$(openssl rand ...)`
+    # as a SINGLE generation site (the var can then be reused).
+    inline_subshells = list(re.finditer(
+        r"\$\(\s*openssl\s+rand[^)]*\)", content,
+    ))
+    # Subtract assignments that pin the result to a reusable shell var.
+    # `PW=$(openssl rand ...)` or `PASSWORD=$(openssl rand ...)` produce
+    # exactly one generation but allow N reuses via `$PW` / `$PASSWORD`.
+    var_assignments = list(re.finditer(
+        r"^\s*[A-Z_][A-Z0-9_]*\s*=\s*\$\(\s*openssl\s+rand[^)]*\)",
+        content, re.MULTILINE,
+    ))
+
+    distinct_generations = len(inline_subshells)
+    # If at least 2 inline openssl calls exist and the file is NOT using
+    # the single-assign-and-reuse pattern for at least one of them,
+    # treat that as drift.
+    if distinct_generations < 2:
+        return []
+
+    # If all `openssl rand` invocations occur inside `VAR=$(...)` form
+    # AND the file references the same VAR in both instance-create and
+    # secret-create commands, that's the canonical safe pattern.
+    if len(var_assignments) == 1 and distinct_generations == 1:
+        return []
+
+    # Find the first 'extra' openssl rand site that is NOT a single
+    # var-assignment — that's our violation site.
+    var_assign_spans = {(m.start(), m.end()) for m in var_assignments}
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+    for inline in inline_subshells:
+        # Skip if this openssl is inside a `VAR=$(...)` assignment
+        wraps_assignment = any(
+            a_start <= inline.start() <= a_end
+            for a_start, a_end in var_assign_spans
+        )
+        line_no = content[:inline.start()].count("\n") + 1
+        if wraps_assignment and len(inline_subshells) > 1:
+            # Two var-assignments = drift (each makes a different PW)
+            if len(var_assignments) >= 2 and line_no not in seen_lines:
+                if "noqa: MAJ-014" in content.split("\n")[line_no - 1]:
+                    continue
+                seen_lines.add(line_no)
+                violations.append(Violation(
+                    rule_id=rule["id"],
+                    severity=rule["severity"],
+                    artifact=art.identifier,
+                    location=f"{art.identifier}:{line_no}",
+                    excerpt=(
+                        "multiple `openssl rand` assignments — instance "
+                        "and secret will diverge (PPEME bug, 2026-05-14)"
+                    ),
+                    suggested_fix=rule.get("remediation", ""),
+                ))
+            continue
+        if line_no in seen_lines:
+            continue
+        if "noqa: MAJ-014" in content.split("\n")[line_no - 1]:
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                "second `openssl rand` site — instance and secret "
+                "passwords will diverge (PPEME bug, 2026-05-14)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+    return violations
+
+
+def _check_cloudrun_runtime_sa_missing_cloudsql_client(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-015: Engine bootstrap script creates a `<engine>-runtime` SA
+    AND references `--add-cloudsql-instances=...` in deploy config, but
+    fails to grant `roles/cloudsql.client` to that SA at project scope.
+
+    WHY: PPEME bug from 2026-05-14 — runtime SA had no Cloud SQL client
+    role, so Cloud SQL Auth Proxy failed with 403 `Not authorized to
+    access resource. Possibly missing permission cloudsql.instances.get`
+    at first container start. Granting `roles/cloudsql.client` at the
+    project level is mandatory for any engine that uses the auth proxy.
+
+    Heuristic:
+      - Apply to `.sh`, `.md`, `.yaml`, `.yml` files under the repo.
+      - Find `iam service-accounts create <name>-runtime` invocations.
+      - For each runtime SA, search the SAME file for either a
+        `roles/cloudsql.client` binding targeting that SA name, or for
+        the absence of any `--add-cloudsql-instances` usage anywhere in
+        the file (no Cloud SQL = no Cloud SQL client role required).
+      - Fire if `--add-cloudsql-instances` appears but no
+        `cloudsql.client` grant for the matched SA.
+    """
+    ext = art.metadata.get("ext")
+    if ext not in {".sh", ".md", ".yaml", ".yml"}:
+        return []
+    content = art.content
+
+    # No Cloud SQL referenced anywhere → not applicable.
+    if not re.search(r"--add-cloudsql-instances", content):
+        return []
+
+    runtime_sa_matches = list(re.finditer(
+        r"iam\s+service-accounts\s+create\s+([a-z][-a-z0-9]*-runtime)\b",
+        content,
+    ))
+    if not runtime_sa_matches:
+        return []
+
+    violations: list[Violation] = []
+    for m in runtime_sa_matches:
+        sa_name = m.group(1)
+        # Search for a cloudsql.client grant targeting this SA.
+        grant_pattern = re.compile(
+            rf"add-iam-policy-binding[^\n]*"
+            rf"serviceAccount:{re.escape(sa_name)}[^\n]*"
+            rf"roles/cloudsql\.client",
+            re.DOTALL,
+        )
+        # Also accept the inverse multi-line shape where role appears first
+        grant_pattern_b = re.compile(
+            rf"roles/cloudsql\.client[^\n]*"
+            rf"serviceAccount:{re.escape(sa_name)}",
+            re.DOTALL,
+        )
+        # And accept the 3-line gcloud form with line breaks
+        loose_pattern = re.compile(
+            rf"add-iam-policy-binding.*?"
+            rf"serviceAccount:{re.escape(sa_name)}.*?"
+            rf"roles/cloudsql\.client",
+            re.DOTALL,
+        )
+        has_grant = bool(
+            grant_pattern.search(content)
+            or grant_pattern_b.search(content)
+            or loose_pattern.search(content)
+        )
+        if has_grant:
+            continue
+        line_no = content[:m.start()].count("\n") + 1
+        if "noqa: MAJ-015" in content.split("\n")[line_no - 1]:
+            continue
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"runtime SA `{sa_name}` created and Cloud SQL in use, "
+                "but no `roles/cloudsql.client` grant found "
+                "(PPEME bug, 2026-05-14)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+    return violations
+
+
+def _check_dockerfile_alembic_discipline(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-020: Engine repo has alembic but its Dockerfile does NOT
+    COPY alembic + alembic.ini + start.sh, OR start.sh does not run
+    `alembic upgrade head` before launching the app.
+
+    WHY: HME bug #4 from the 2026-05-13 cascade — Dockerfile only copied
+    `api/`, leaving `alembic.ini` and `alembic/` outside the image, so
+    container start logged `No config file alembic.ini found` and the
+    DB schema was never created. The canonical fix is in
+    `standard_engine_deploy_template.md §1-§2`: Dockerfile copies
+    `alembic/`, `alembic.ini`, `start.sh`; start.sh runs
+    `alembic upgrade head` (12-factor migration on boot).
+
+    Heuristic:
+      - Apply only when the scanned artifact is a `Dockerfile` (file
+        with that exact basename, any extension is ignored).
+      - Look up the repo root from the artifact identifier (first path
+        segment). If `<repo>/alembic.ini` or `<repo>/alembic/` exists,
+        the rule is applicable.
+      - Fire if Dockerfile does NOT contain BOTH of:
+          (a) `COPY ... alembic` (alembic dir into image)
+          (b) `COPY ... alembic.ini` (config file into image)
+      - Separately, if the repo has `start.sh`, ensure it runs
+        `alembic upgrade head`; if not, also fire (one violation per
+        missing element).
+      - `# noqa: MAJ-020` on the COPY/start.sh line suppresses.
+    """
+    name = Path(art.identifier).name
+    if name != "Dockerfile":
+        return []
+
+    github_root = Path(
+        os.environ.get("DRIFT_LOCAL_CODEBASE_ROOT",
+                       "/Users/admin/Documents/GitHub")
+    )
+    parts = Path(art.identifier).parts
+    if not parts:
+        return []
+    repo_root = github_root / parts[0]
+    has_alembic_ini = (repo_root / "alembic.ini").exists()
+    has_alembic_dir = (repo_root / "alembic").is_dir()
+    if not (has_alembic_ini or has_alembic_dir):
+        return []
+
+    content = art.content
+    if "noqa: MAJ-020" in content:
+        return []
+    violations: list[Violation] = []
+
+    # Catch-all: `COPY . .` / `COPY . /app/` (or any whole-context copy)
+    # implicitly includes alembic/ + alembic.ini. Skip the granular
+    # checks if the Dockerfile copies the entire context.
+    copies_whole_context = bool(re.search(
+        r"^\s*COPY\s+(?:--\S+\s+)*\.\s+\.?/?",
+        content, re.MULTILINE,
+    ))
+    # (a) COPY of alembic directory
+    copy_alembic_dir = copies_whole_context or bool(re.search(
+        r"^\s*COPY\b[^\n]*\balembic(?:/|\s|$)",
+        content, re.MULTILINE | re.IGNORECASE,
+    ))
+    # (b) COPY of alembic.ini
+    copy_alembic_ini = copies_whole_context or bool(re.search(
+        r"^\s*COPY\b[^\n]*\balembic\.ini\b",
+        content, re.MULTILINE | re.IGNORECASE,
+    ))
+    if has_alembic_dir and not copy_alembic_dir:
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=art.identifier,
+            excerpt=(
+                "repo has `alembic/` directory but Dockerfile does not "
+                "COPY it — migrations cannot run at container startup "
+                "(HME bug #4, 2026-05-13)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+    if has_alembic_ini and not copy_alembic_ini:
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=art.identifier,
+            excerpt=(
+                "repo has `alembic.ini` but Dockerfile does not COPY it "
+                "— `alembic upgrade head` will fail with 'No config "
+                "file alembic.ini found' (HME bug #4, 2026-05-13)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    # (c) start.sh exists and runs `alembic upgrade head`
+    start_sh = repo_root / "start.sh"
+    if start_sh.exists():
+        try:
+            start_content = start_sh.read_text(encoding="utf-8",
+                                               errors="ignore")
+        except OSError:
+            start_content = ""
+        if "noqa: MAJ-020" not in start_content:
+            runs_migration = bool(re.search(
+                r"alembic\s+upgrade\s+head", start_content,
+            ))
+            if not runs_migration:
+                try:
+                    rel = str(start_sh.relative_to(github_root))
+                except ValueError:
+                    rel = str(start_sh)
+                violations.append(Violation(
+                    rule_id=rule["id"],
+                    severity=rule["severity"],
+                    artifact=art.identifier,
+                    location=rel,
+                    excerpt=(
+                        "start.sh exists but does not run `alembic "
+                        "upgrade head` — engine boots without applying "
+                        "schema (HME pattern, 2026-05-13)"
+                    ),
+                    suggested_fix=rule.get("remediation", ""),
+                ))
+    return violations
+
+
+def _check_cloud_sql_url_discipline(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MAJ-021: Database URL construction uses raw f-string / string
+    concatenation with a `/cloudsql/...` socket path instead of
+    `sqlalchemy.engine.URL.create(..., query={"host": socket})`.
+
+    WHY: HME bug #6 from the 2026-05-13 cascade — the URL form
+    `postgresql://user:pw@{host}/db` treated `/cloudsql/<project>:
+    <region>:<instance>` as a TCP hostname. The colons in the socket
+    path corrupted parsing → psycopg2 silently fell back to the default
+    socket `/var/run/postgresql/.s.PGSQL.5432`. The canonical fix is
+    `URL.create(drivername=..., username=..., password=..., database=...,
+    query={"host": socket_path})` — encodes the socket path safely.
+    See `standard_engine_deploy_template.md §3`.
+
+    Heuristic:
+      - Apply to Python files only.
+      - Skip test files (heuristic strings often appear in test
+        fixtures).
+      - Look for raw `postgresql://...@/cloudsql/` or
+        `postgresql+psycopg2://...@/cloudsql/` patterns built via
+        f-string or `.format()` or `+` concatenation.
+      - Also fire on f-strings like f"postgresql://{user}:{password}@
+        /cloudsql/...".
+      - Do NOT fire if the same file (or surrounding ±15 lines) calls
+        `URL.create(`.
+      - `# noqa: MAJ-021` on the line suppresses.
+    """
+    if art.artifact_type != "code":
+        return []
+    if art.metadata.get("ext") != ".py":
+        return []
+    name_lower = art.identifier.lower()
+    if (name_lower.startswith("test_") or "/tests/" in name_lower
+            or "tests/" in name_lower or "_test.py" in name_lower):
+        return []
+
+    content = art.content
+    lines = content.split("\n")
+
+    # Heuristic patterns for raw URL construction targeting Cloud SQL
+    # socket paths. Each pattern requires evidence that the URL is being
+    # built (not just string-sliced) AND that it targets `/cloudsql/`
+    # OR has a `{host}` / `{socket}` placeholder — that's where the bug
+    # lives. Pure scheme-prefix slicing (`"postgresql://" + dsn[len("X"):]`)
+    # is OUT of scope; tightened after sales-operating-system false
+    # positive on 2026-05-14.
+    raw_url_patterns = [
+        # f-string with /cloudsql/ socket: f"postgresql://...@/cloudsql/..."
+        re.compile(
+            r"""f["'](?:postgresql|postgres)\+?\w*://[^"']*?"""
+            r"""@/cloudsql/[^"']+["']""",
+        ),
+        # .format() / concat shape with explicit {host}/{socket} placeholder
+        # and a /cloudsql/ reference (paren'd in same template or nearby).
+        re.compile(
+            r"""["'](?:postgresql|postgres)\+?\w*://[^"']*?"""
+            r"""\{(?:host|socket)[^"']*?\}[^"']*?["']""",
+        ),
+    ]
+
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+    for pat in raw_url_patterns:
+        for m in pat.finditer(content):
+            line_no = content[:m.start()].count("\n") + 1
+            if line_no in seen_lines:
+                continue
+            # If the file uses URL.create within ±15 lines of the match,
+            # treat as safe (mixed-use file with the right pattern present).
+            window_start = max(0, line_no - 15)
+            window_end = min(len(lines), line_no + 15)
+            window = "\n".join(lines[window_start:window_end])
+            if re.search(r"\bURL\.create\s*\(", window):
+                continue
+            # Per-line noqa override
+            if "noqa: MAJ-021" in lines[line_no - 1]:
+                continue
+            seen_lines.add(line_no)
+            violations.append(Violation(
+                rule_id=rule["id"],
+                severity=rule["severity"],
+                artifact=art.identifier,
+                location=f"{art.identifier}:{line_no}",
+                excerpt=(
+                    "raw URL construction for Cloud SQL socket path — "
+                    "colons in `/cloudsql/<proj>:<region>:<instance>` "
+                    "corrupt parsing; use `URL.create(..., "
+                    "query={'host': socket})` (HME bug #6, 2026-05-13)"
+                ),
+                suggested_fix=rule.get("remediation", ""),
+            ))
+    return violations
+
+
 # Map rule.id → custom structural handler (for rules that need bespoke logic)
 STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "CRIT-001": _check_automation_without_override,
@@ -1447,6 +1966,11 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-004": _check_unaudited_state_change,
     "MAJ-005": _check_monorepo_circular_dep,
     "MAJ-012": _check_in_memory_state_without_db_writethrough,
+    "MAJ-013": _check_cloudbuild_secret_env_in_non_bash_step,
+    "MAJ-014": _check_cloudsql_password_drift_between_instance_and_secret,
+    "MAJ-015": _check_cloudrun_runtime_sa_missing_cloudsql_client,
+    "MAJ-020": _check_dockerfile_alembic_discipline,
+    "MAJ-021": _check_cloud_sql_url_discipline,
     "MAJ-006": _check_schema_without_migration,
     "MAJ-009": _check_phase_gate_violation,
     "MAJ-010": _check_value_chain_break,
