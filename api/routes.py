@@ -318,9 +318,15 @@ def overrides_record(payload: OverrideRecordRequest):
 
     Per CRIT-001 (Human Override Non-Negotiable). Persists to the
     human_overrides SQLite store; 5-type taxonomy classification is
-    computed automatically.
+    computed automatically. v0.5 additions:
+      - reasoning ≥20 chars enforced (422 on short reasoning)
+      - HMAC-SHA256 signature attached to every persisted row
+      - OVS-Calibration emission on insert (per-type weight)
+      - per-overrider rate-limit alert at >10/hour (never blocks)
     """
-    from engine.human_override import OverrideRecord, record_override
+    from engine.human_override import (
+        OverrideRecord, ReasoningTooShort, record_override,
+    )
     try:
         rec = OverrideRecord(
             decision_id=payload.decision_id,
@@ -336,9 +342,49 @@ def overrides_record(payload: OverrideRecordRequest):
             freeform_metadata=payload.freeform_metadata,
         )
         return record_override(rec)
+    except ReasoningTooShort as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         # classify_override raises on unknown override_type
         raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/v1/overrides/sweep", status_code=202)
+def overrides_sweep(window_days: int = 1, dry_run: bool = False):
+    """Run the nightly human-override pattern sweep (admin).
+
+    Detects clusters over the last `window_days` days, persists them to
+    override_patterns, and opens negative-polarity codification
+    proposals for stable patterns (cluster_size ≥5 AND span ≥48h).
+    """
+    from engine.human_override import sweep
+    window_days = max(1, min(int(window_days), 30))
+    return sweep.run_nightly_sweep(window_days=window_days, dry_run=dry_run)
+
+
+@router.get("/v1/overrides/patterns")
+def overrides_patterns(
+    cross_org: bool = False,
+    polarity: Optional[str] = None,
+    limit: int = 200,
+):
+    """List detected override patterns.
+
+    When `cross_org=true`, any user-id fields in the response are
+    redacted to a stable anonymous hash (per spec decision #11). The
+    override_patterns table itself doesn't carry user ids today; the
+    redaction seam is defensive for v0.6 schema extensions.
+    """
+    from engine.human_override import anonymize, patterns
+    limit = max(1, min(int(limit), 1000))
+    items = patterns.list_patterns(limit=limit, polarity=polarity)
+    if cross_org:
+        items = [anonymize.redact_row(item) for item in items]
+    return {
+        "items": items,
+        "count": len(items),
+        "filter": {"polarity": polarity, "cross_org": cross_org},
+    }
 
 
 @router.get("/v1/overrides/{override_id}")
