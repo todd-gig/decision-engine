@@ -60,6 +60,23 @@ steps:
         SECRET_FLAG=""
         if gcloud secrets describe drift-gh-token >/dev/null 2>&1; then
           SECRET_FLAG="--set-secrets=GH_TOKEN=drift-gh-token:latest"
+
+          # Resolve the project's default compute SA — this is the runtime
+          # SA Cloud Run Jobs use when --service-account isn't specified.
+          PROJECT_NUMBER="$$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
+          RUNTIME_SA="$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+          # Self-heal: grant the runtime SA secretmanager.secretAccessor on
+          # this specific secret. Idempotent — re-grants are no-ops.
+          # Without this, the deploy fails with:
+          #   "Permission denied on secret: ... for Revision service account
+          #    ...-compute@developer.gserviceaccount.com"
+          gcloud secrets add-iam-policy-binding drift-gh-token \
+            --member="serviceAccount:$${RUNTIME_SA}" \
+            --role="roles/secretmanager.secretAccessor" \
+            --quiet \
+            >/dev/null 2>&1 \
+            || echo "[deploy] WARN: could not grant secret access to $${RUNTIME_SA} (may already be granted)"
         else
           echo "[deploy] drift-gh-token not set — GitHub adapter will yield 0 artifacts"
         fi
