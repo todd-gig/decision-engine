@@ -191,3 +191,59 @@ class PipelineResponse(BaseModel):
     executive_summary: str = ""
     audit_log: list[AuditEntry] = Field(default_factory=list)
     full_result: Optional[dict] = None
+
+
+# ── Human Override + Codification ─────────────────────────────────────────────
+
+
+class OverrideRecordRequest(BaseModel):
+    """POST /v1/overrides — record one human override."""
+    decision_id: Optional[str] = None
+    decision_certificate_id: Optional[str] = None
+    override_type: str = Field(..., min_length=1)
+    overridden_by_user_id: str = Field(..., min_length=1)
+    overridden_at: str = Field(..., min_length=1)  # ISO-8601
+    source_engine: str = Field(..., min_length=1, max_length=64)
+    surface: str = Field(..., min_length=1)
+    original_action: str = Field(..., min_length=1)
+    override_action: str = Field(..., min_length=1)
+    user_reasoning: Optional[str] = None
+    freeform_metadata: Optional[dict] = None
+
+
+class ProposalSimSummary(BaseModel):
+    n: int
+    divergence_p50: float
+    divergence_p90: float
+    cost_savings_usd: Optional[float] = None
+    latency_savings_ms: Optional[int] = None
+
+
+class ProposalCreateRequest(BaseModel):
+    """POST /v1/proposals — open a new codification proposal."""
+    candidate_pv: str = Field(..., min_length=1)
+    candidate_sv: str = Field(..., min_length=1)
+    candidate_score: float = Field(..., ge=0.0, le=1.0)
+    analyzer_run_at: str = Field(..., min_length=1)
+    proposed_python: str = Field(..., min_length=1)
+    proposed_tests: str = Field(..., min_length=1)
+    why: str = Field(..., min_length=1)
+    sim: ProposalSimSummary
+
+
+class ProposalApproveRequest(BaseModel):
+    """POST /v1/proposals/{id}/approve — record human decision."""
+    approver_user_id: str = Field(..., min_length=1)
+    approval_why: str = Field(..., min_length=1)
+    new_status: str = Field(..., min_length=1)  # validated against enum in handler
+    shipped_pr_url: Optional[str] = None
+
+
+class AnalyzerRunRequest(BaseModel):
+    """POST /v1/codification/analyze — trigger an analyzer run."""
+    min_volume: int = Field(default=100, ge=1)
+    score_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    open_top_n_as_proposals: int = Field(default=0, ge=0, le=50)
+    audit_db_path: Optional[str] = None
+    proposals_db_path: Optional[str] = None
+    why: str = Field(default="scheduled analyzer run")

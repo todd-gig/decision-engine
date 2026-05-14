@@ -26,4 +26,15 @@ __all__ = [
     "get_proposal",
     "list_proposals",
     "approve_proposal",
+    "analyze",
+    "open_candidates_as_proposals",
+    "Candidate",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy-load analyzer to avoid circular import (analyzer needs queue first)."""
+    if name in {"analyze", "open_candidates_as_proposals", "Candidate"}:
+        from . import analyzer
+        return getattr(analyzer, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
