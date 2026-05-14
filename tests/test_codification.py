@@ -753,3 +753,478 @@ def test_sweep_carries_version_metadata(tmp_path):
     assert report.prompt_version
     assert report.schema_version
     assert "codification_sweep" in report.prompt_version
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# v0.6: proposer + simulator + sweep wiring
+# ──────────────────────────────────────────────────────────────────────────
+
+
+from dataclasses import dataclass as _dc
+from engine.codification.proposer import (
+    BannedImportError,
+    Candidate as ProposerCandidate,
+    PROPOSER_PROMPT_VERSION,
+    PROPOSER_SCHEMA_VERSION,
+    get_module_proposal,
+    propose_python_module,
+)
+from engine.codification.simulator import (
+    CODIFIED_ENTRY_POINT,
+    DOCTRINE_DIVERGENCE_CEILING,
+    SimulatorCompileError,
+    simulate_against_history,
+)
+
+
+_GOOD_SOURCE = '''"""Codified pricing extraction. Stateless, pure.
+
+penrose_signal: weakens
+penrose_dimension: codification
+"""
+
+def codified(payload: dict) -> str:
+    """Return upper-cased label from payload['label']. Raises ValueError on miss."""
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    label = payload.get("label")
+    if not isinstance(label, str):
+        raise ValueError("payload['label'] must be a string")
+    return label.upper()
+'''
+
+
+_BAD_SOURCE_ANTHROPIC = '''"""Bad — imports anthropic SDK directly."""
+import anthropic
+
+def codified(payload):
+    client = anthropic.Anthropic()
+    return client.messages.create(model="x")
+'''
+
+
+_BAD_SOURCE_REQUESTS = '''"""Bad — posts to an external LLM gateway."""
+import requests
+
+def codified(payload):
+    return requests.post("https://api.openai.com/v1/x", json=payload).text
+'''
+
+
+@_dc
+class _StubInvokeResult:
+    text: str
+    audit_id: str = "AUD-STUB-001"
+    provider_used: str = "anthropic"
+    model_used: str = "claude-3-5-sonnet"
+
+
+def _stub_invoke_factory(text: str, *, audit_id: str = "AUD-STUB-001"):
+    """Build a stub `invoke_fn` substitute for the proposer."""
+    captured: dict = {}
+
+    def stub_invoke(**kwargs):
+        captured.update(kwargs)
+        return _StubInvokeResult(text=text, audit_id=audit_id)
+
+    stub_invoke.captured = captured  # type: ignore[attr-defined]
+    return stub_invoke
+
+
+def _new_proposer_candidate(**overrides) -> ProposerCandidate:
+    defaults = dict(
+        candidate_id="cand-v06-001",
+        candidate_pv="codifiable.v1",
+        candidate_sv="cs.v1",
+        candidate_score=0.92,
+        executions=200,
+        evidence_ids=["AUD-1", "AUD-2", "AUD-3"],
+        why="High volume + low variance; deterministic label-uppercase pattern.",
+    )
+    defaults.update(overrides)
+    return ProposerCandidate(**defaults)
+
+
+def test_proposer_persists_module_and_md(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    mp = propose_python_module(
+        _new_proposer_candidate(),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    assert mp.proposal_id.startswith("MP-")
+    # Proposer strips whitespace around the LLM output before persisting.
+    assert mp.source_code == _GOOD_SOURCE.strip()
+    assert mp.prompt_version == PROPOSER_PROMPT_VERSION
+    assert mp.schema_version == PROPOSER_SCHEMA_VERSION
+    assert mp.target_path.startswith("engine/codification/codified/")
+    # MD artifact exists with the signature hash recorded.
+    md_files = list((tmp_path / "proposals").glob("*.md"))
+    assert len(md_files) == 1
+    text = md_files[0].read_text()
+    assert f"proposal_id: {mp.proposal_id}" in text
+    assert mp.signature_match_hash in text
+    assert "penrose_signal: weakens" in text
+    # Roundtrip from DB.
+    fetched = get_module_proposal(mp.proposal_id, db_path=tmp_db)
+    assert fetched is not None
+    assert fetched.signature_match_hash == mp.signature_match_hash
+
+
+def test_proposer_routes_through_ai_router_with_required_fields(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    propose_python_module(
+        _new_proposer_candidate(),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    captured = stub.captured  # type: ignore[attr-defined]
+    # CRIT-003 + CRIT-007 — provider, model, prompt_version, schema_version required.
+    assert captured["provider"]
+    assert captured["model"]
+    assert captured["prompt_version"] == PROPOSER_PROMPT_VERSION
+    assert captured["schema_version"] == PROPOSER_SCHEMA_VERSION
+    assert captured["caller_engine"] == "codification"
+    assert "propose_python_module" in captured["caller_function"]
+
+
+def test_proposer_rejects_anthropic_import(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(_BAD_SOURCE_ANTHROPIC)
+    with pytest.raises(BannedImportError, match="anthropic"):
+        propose_python_module(
+            _new_proposer_candidate(),
+            certificate=None,
+            db_path=tmp_db,
+            md_dir=tmp_path / "proposals",
+            invoke_fn=stub,
+        )
+
+
+def test_proposer_rejects_requests_post(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(_BAD_SOURCE_REQUESTS)
+    with pytest.raises(BannedImportError):
+        propose_python_module(
+            _new_proposer_candidate(),
+            certificate=None,
+            db_path=tmp_db,
+            md_dir=tmp_path / "proposals",
+            invoke_fn=stub,
+        )
+
+
+def test_proposer_rejects_empty_source(tmp_db, tmp_path):
+    stub = _stub_invoke_factory("   ")
+    with pytest.raises(BannedImportError, match="empty"):
+        propose_python_module(
+            _new_proposer_candidate(),
+            certificate=None,
+            db_path=tmp_db,
+            md_dir=tmp_path / "proposals",
+            invoke_fn=stub,
+        )
+
+
+def test_proposer_validates_required_candidate_fields(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    with pytest.raises(ValueError):
+        propose_python_module(
+            _new_proposer_candidate(candidate_id=""),
+            certificate=None,
+            db_path=tmp_db,
+            md_dir=tmp_path / "proposals",
+            invoke_fn=stub,
+        )
+
+
+def _seed_audit_rows_with_metadata(db_path: str, rows: list[dict]):
+    """Seed llm_audit with explicit per-row replayed_input + replayed_response."""
+    conn = audit_storage.get_connection(db_path)
+    try:
+        for i, r in enumerate(rows):
+            meta = json.dumps({
+                "replayed_input": r.get("input"),
+                "replayed_response": r.get("response"),
+            })
+            conn.execute(
+                """
+                INSERT INTO llm_audit (
+                    audit_id, invoked_at, caller_engine, caller_function,
+                    provider_requested, provider_used, model_requested, model_used,
+                    prompt_version, schema_version, in_chars, out_chars,
+                    in_tokens, out_tokens, cost_usd, latency_ms,
+                    fallback_chain_taken, audit_metadata, error,
+                    prompt_hash, response_hash, audit_signature
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    r["audit_id"],
+                    datetime.now(tz=timezone.utc).isoformat(),
+                    "test_engine", "test_fn",
+                    "anthropic", "anthropic",
+                    "claude-3-5", "claude-3-5",
+                    "codifiable.v1", "cs.v1",
+                    100, 50, 25, 12, 0.001, 80,
+                    "[]", meta, None,
+                    "phash", "rhash", "sig",
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def test_simulator_passes_on_identical_output(tmp_db, tmp_path):
+    audit_db = str(tmp_path / "llm_audit.db")
+    _seed_audit_rows_with_metadata(audit_db, [
+        {"audit_id": "AUD-S1", "input": {"label": "alpha"}, "response": "ALPHA"},
+        {"audit_id": "AUD-S2", "input": {"label": "beta"},  "response": "BETA"},
+        {"audit_id": "AUD-S3", "input": {"label": "gamma"}, "response": "GAMMA"},
+    ])
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    mp = propose_python_module(
+        _new_proposer_candidate(evidence_ids=["AUD-S1", "AUD-S2", "AUD-S3"]),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    sim = simulate_against_history(
+        mp,
+        evidence_decision_ids=["AUD-S1", "AUD-S2", "AUD-S3"],
+        audit_db_path=audit_db,
+    )
+    assert sim.n == 3
+    assert sim.status == "PASSED"
+    assert sim.divergence_rate == 0.0
+    assert sim.divergence_cases == []
+    assert sim.module_proposal_id == mp.proposal_id
+    assert sim.signature_match_hash == mp.signature_match_hash
+
+
+def test_simulator_catches_divergence_above_ceiling(tmp_db, tmp_path):
+    audit_db = str(tmp_path / "llm_audit.db")
+    # 5 rows, 4 of which the proposed module gets WRONG → 80% divergence.
+    # Proposed module uppercases label; we plant lowercase responses so
+    # the comparator finds disagreement on 4 of 5.
+    _seed_audit_rows_with_metadata(audit_db, [
+        {"audit_id": "AUD-D1", "input": {"label": "alpha"}, "response": "ALPHA"},  # matches
+        {"audit_id": "AUD-D2", "input": {"label": "beta"},  "response": "beta"},   # diverges
+        {"audit_id": "AUD-D3", "input": {"label": "gamma"}, "response": "gamma"},  # diverges
+        {"audit_id": "AUD-D4", "input": {"label": "delta"}, "response": "delta"},  # diverges
+        {"audit_id": "AUD-D5", "input": {"label": "eps"},   "response": "eps"},    # diverges
+    ])
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    mp = propose_python_module(
+        _new_proposer_candidate(evidence_ids=[f"AUD-D{i}" for i in range(1, 6)]),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    sim = simulate_against_history(
+        mp,
+        evidence_decision_ids=[f"AUD-D{i}" for i in range(1, 6)],
+        audit_db_path=audit_db,
+    )
+    assert sim.n == 5
+    assert sim.status == "REJECTED_BY_DIVERGENCE"
+    assert sim.divergence_rate == pytest.approx(0.8)
+    assert len(sim.divergence_cases) == 4
+    for case in sim.divergence_cases:
+        assert case["audit_id"].startswith("AUD-D")
+        assert case["expected"] != case["actual"]
+
+
+def test_simulator_compile_error_on_invalid_python(tmp_db, tmp_path):
+    # Source is not valid Python — proposer normally rejects only on
+    # banned-import grep, but the simulator must surface syntax errors.
+    stub = _stub_invoke_factory(
+        '"""ok."""\ndef codified(p):\n    return p[\n# missing close\n'
+    )
+    mp = propose_python_module(
+        _new_proposer_candidate(),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    with pytest.raises(SimulatorCompileError):
+        simulate_against_history(mp, evidence_decision_ids=[])
+
+
+def test_simulator_compile_error_when_entry_point_missing(tmp_db, tmp_path):
+    stub = _stub_invoke_factory(
+        '"""ok."""\ndef other_name(p):\n    return p\n'
+    )
+    mp = propose_python_module(
+        _new_proposer_candidate(),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    with pytest.raises(SimulatorCompileError, match=CODIFIED_ENTRY_POINT):
+        simulate_against_history(mp, evidence_decision_ids=[])
+
+
+def test_simulator_ceiling_clamps_to_doctrine_5pct(tmp_db, tmp_path):
+    """A caller cannot loosen the 5% doctrine ceiling above 0.05."""
+    audit_db = str(tmp_path / "llm_audit.db")
+    # 10 rows; module gets 1 wrong → 10% divergence. 10% > 5% so PASSED
+    # is only possible if the ceiling stuck at 5% (rejected). A loose
+    # caller-provided 0.5 ceiling should be silently clamped down to 0.05.
+    _seed_audit_rows_with_metadata(audit_db, [
+        {"audit_id": f"AUD-C{i}", "input": {"label": f"x{i}"}, "response": f"X{i}"}
+        for i in range(9)
+    ] + [
+        # Wrong:
+        {"audit_id": "AUD-C9", "input": {"label": "y"}, "response": "wrong"},
+    ])
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    mp = propose_python_module(
+        _new_proposer_candidate(evidence_ids=[f"AUD-C{i}" for i in range(10)]),
+        certificate=None,
+        db_path=tmp_db,
+        md_dir=tmp_path / "proposals",
+        invoke_fn=stub,
+    )
+    sim = simulate_against_history(
+        mp,
+        evidence_decision_ids=[f"AUD-C{i}" for i in range(10)],
+        audit_db_path=audit_db,
+        divergence_ceiling=0.5,  # attempted loosening
+    )
+    # 10% > 5% (clamped), so must reject.
+    assert sim.status == "REJECTED_BY_DIVERGENCE"
+    assert sim.divergence_rate == pytest.approx(0.1)
+    assert DOCTRINE_DIVERGENCE_CEILING == 0.05
+
+
+def test_sweep_proposer_disabled_by_default_preserves_v05_behavior(tmp_path):
+    audit_db = str(tmp_path / "llm_audit.db")
+    proposals_db = str(tmp_path / "proposals.db")
+    _seed_llm_audit_rows(audit_db, n=120, pv="codifiable.v1", sv="cs.v1")
+    _seed_llm_audit_rows(audit_db, n=80, pv="other.v1", sv="cs.v1",
+                          in_chars=150, out_chars=300)
+    th = ReadinessThresholds(
+        min_executions=50, max_exception_rate=0.5, min_stability=0.4,
+        score_threshold=0.3,
+    )
+    report = run_sweep(
+        min_volume=50, score_threshold=0.0,
+        audit_db_path=audit_db, proposals_db_path=proposals_db,
+        thresholds=th,
+    )
+    # When flag is off, sweep behaves exactly as v0.5.
+    assert report.proposer_enabled is False
+    assert report.module_proposals_drafted == 0
+    assert report.module_proposals_passed == 0
+    assert report.module_proposals_rejected == 0
+    assert report.module_proposal_details == []
+
+
+def test_sweep_proposer_enabled_drives_full_chain(tmp_path, monkeypatch):
+    """End-to-end: proposer + simulator wire in when flag flips on."""
+    audit_db = str(tmp_path / "llm_audit.db")
+    proposals_db = str(tmp_path / "proposals.db")
+
+    # Seed audit with both analyzer-volume rows AND identifiable
+    # evidence rows the simulator can replay.
+    _seed_llm_audit_rows(audit_db, n=120, pv="codifiable.v1", sv="cs.v1")
+    _seed_llm_audit_rows(audit_db, n=80, pv="other.v1", sv="cs.v1",
+                          in_chars=150, out_chars=300)
+    # Add a handful of evidence rows whose ids match the analyzer's
+    # sample_audit_ids (analyzer uses `AUD-codifiable.v1-0..4`).
+    extra = [
+        {"audit_id": f"AUD-codifiable.v1-{i}", "input": {"label": f"x{i}"},
+         "response": f"X{i}"} for i in range(5)
+    ]
+    # The analyzer already inserted AUD-codifiable.v1-0..N; we can't
+    # collide on PK. Instead, patch the proposer's invoke_fn so we don't
+    # actually call out, and accept that simulator will see whatever
+    # audit_metadata exists. Replay rows above are not strictly needed
+    # for this assertion — we're verifying the flag drives the chain.
+
+    th = ReadinessThresholds(
+        min_executions=50, max_exception_rate=0.5, min_stability=0.4,
+        score_threshold=0.3,
+    )
+
+    # Patch proposer to use stub LLM rather than the real router.
+    from engine.codification import proposer as _proposer_mod
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    monkeypatch.setattr(_proposer_mod, "_ai_invoke", stub)
+
+    report = run_sweep(
+        min_volume=50, score_threshold=0.0,
+        audit_db_path=audit_db, proposals_db_path=proposals_db,
+        thresholds=th, proposer_enabled=True, proposer_top_n=3,
+        proposer_md_dir=str(tmp_path / "proposals"),
+    )
+    assert report.proposer_enabled is True
+    # Some candidates should have been drafted into modules.
+    assert report.module_proposals_drafted >= 1
+    # Each module-proposal detail row carries a `simulator_passed` and
+    # `ready_for_signoff` boolean.
+    for d in report.module_proposal_details:
+        assert "simulator_passed" in d
+        assert "ready_for_signoff" in d
+        # `ready_for_signoff` is True iff simulator passed.
+        assert d["ready_for_signoff"] == d["simulator_passed"]
+
+
+def test_sweep_proposer_env_flag_resolves(tmp_path, monkeypatch):
+    """CODIFICATION_PROPOSER_ENABLED env flips the gate when kwarg is None."""
+    audit_db = str(tmp_path / "llm_audit.db")
+    proposals_db = str(tmp_path / "proposals.db")
+    _seed_llm_audit_rows(audit_db, n=120, pv="env.v1", sv="cs.v1")
+    _seed_llm_audit_rows(audit_db, n=80, pv="other.v1", sv="cs.v1",
+                          in_chars=150, out_chars=300)
+    th = ReadinessThresholds(
+        min_executions=50, max_exception_rate=0.5, min_stability=0.4,
+        score_threshold=0.3,
+    )
+    from engine.codification import proposer as _proposer_mod
+    stub = _stub_invoke_factory(_GOOD_SOURCE)
+    monkeypatch.setattr(_proposer_mod, "_ai_invoke", stub)
+    monkeypatch.setenv("CODIFICATION_PROPOSER_ENABLED", "1")
+
+    report = run_sweep(
+        min_volume=50, score_threshold=0.0,
+        audit_db_path=audit_db, proposals_db_path=proposals_db,
+        thresholds=th, proposer_md_dir=str(tmp_path / "proposals"),
+    )
+    assert report.proposer_enabled is True
+
+
+def test_sweep_proposer_banned_import_recorded_as_rejected(tmp_path, monkeypatch):
+    audit_db = str(tmp_path / "llm_audit.db")
+    proposals_db = str(tmp_path / "proposals.db")
+    _seed_llm_audit_rows(audit_db, n=120, pv="banned.v1", sv="cs.v1")
+    _seed_llm_audit_rows(audit_db, n=80, pv="other.v1", sv="cs.v1",
+                          in_chars=150, out_chars=300)
+    th = ReadinessThresholds(
+        min_executions=50, max_exception_rate=0.5, min_stability=0.4,
+        score_threshold=0.3,
+    )
+    from engine.codification import proposer as _proposer_mod
+    stub = _stub_invoke_factory(_BAD_SOURCE_ANTHROPIC)
+    monkeypatch.setattr(_proposer_mod, "_ai_invoke", stub)
+
+    report = run_sweep(
+        min_volume=50, score_threshold=0.0,
+        audit_db_path=audit_db, proposals_db_path=proposals_db,
+        thresholds=th, proposer_enabled=True, proposer_top_n=3,
+        proposer_md_dir=str(tmp_path / "proposals"),
+    )
+    # Drafts should be 0 (banned-import rejection happens before draft
+    # is counted) and rejected count should reflect every banned LLM.
+    assert report.module_proposals_drafted == 0
+    assert report.module_proposals_rejected >= 1
+    assert all(
+        d.get("error", "").startswith("banned_import")
+        for d in report.module_proposal_details
+    )
