@@ -34,7 +34,9 @@ from engine.human_override import (
     anonymize,
     calibration_emit,
     drift_signal,
+    drift_writer,
     patterns,
+    pubsub_emitter,
     rate_limit,
     signing,
     storage,
@@ -627,3 +629,360 @@ def test_cross_org_view_redacts_all_user_ids(tmp_db, tmp_calibration_log):
     assert "bella@gigaton.ai" not in serialized
     for r in redacted:
         assert r["overridden_by_user_id"].startswith("anon:")
+
+
+# ── v0.6 — PubSubEmitter ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def clean_pubsub_env(monkeypatch):
+    """Strip any inherited Pub/Sub config so tests start from a known state."""
+    monkeypatch.delenv("OVERRIDE_CALIBRATION_TOPIC", raising=False)
+    monkeypatch.delenv("PUBSUB_EMULATOR_HOST", raising=False)
+
+
+def test_pubsub_emitter_falls_back_to_jsonl_when_topic_unset(
+    tmp_path, clean_pubsub_env,
+):
+    log = tmp_path / "fallback.jsonl"
+    emitter = pubsub_emitter.PubSubEmitter(
+        topic_path=None, fallback_log_path=log,
+    )
+    assert emitter.is_configured() is False
+    result = emitter.publish({"override_id": "abc", "weight": 3.0})
+    assert result.startswith("jsonl:")
+    assert log.exists()
+    rows = log.read_text().strip().splitlines()
+    assert len(rows) == 1
+    assert json.loads(rows[0])["override_id"] == "abc"
+
+
+def test_pubsub_emitter_falls_back_when_emulator_env_present(
+    tmp_path, monkeypatch,
+):
+    """Emulator env present → fallback even if a topic is configured.
+
+    Why: emulator mode means the operator wants local routing; routing
+    to the real Pub/Sub broker would be a surprise. Fallback JSONL keeps
+    behavior local and observable.
+    """
+    log = tmp_path / "fallback.jsonl"
+    monkeypatch.setenv("OVERRIDE_CALIBRATION_TOPIC", "projects/x/topics/y")
+    monkeypatch.setenv("PUBSUB_EMULATOR_HOST", "localhost:8085")
+    emitter = pubsub_emitter.PubSubEmitter(fallback_log_path=log)
+    assert emitter.is_configured() is False
+    result = emitter.publish({"override_id": "abc"})
+    assert result.startswith("jsonl:")
+
+
+def test_pubsub_emitter_publish_succeeds_in_mock_mode(
+    tmp_path, clean_pubsub_env, monkeypatch,
+):
+    """With a mocked PublisherClient, .publish() goes through the real path."""
+    from unittest.mock import MagicMock, patch
+
+    fake_future = MagicMock()
+    fake_future.result.return_value = "mock-msg-id-12345"
+    fake_publisher = MagicMock()
+    fake_publisher.publish.return_value = fake_future
+
+    fake_pubsub_v1 = MagicMock()
+    fake_pubsub_v1.PublisherClient.return_value = fake_publisher
+    fake_module = MagicMock()
+    fake_module.pubsub_v1 = fake_pubsub_v1
+
+    monkeypatch.setenv(
+        "OVERRIDE_CALIBRATION_TOPIC",
+        "projects/test-proj/topics/override-calibration",
+    )
+
+    with patch.dict("sys.modules", {
+        "google": MagicMock(cloud=fake_module),
+        "google.cloud": fake_module,
+    }):
+        emitter = pubsub_emitter.PubSubEmitter()
+        assert emitter.is_configured() is True
+        msg_id = emitter.publish(
+            {"override_id": "abc", "weight": 3.0},
+            ordering_key="abc",
+        )
+        assert msg_id == "mock-msg-id-12345"
+        fake_publisher.publish.assert_called_once()
+        # ordering_key is forwarded
+        _, kwargs = fake_publisher.publish.call_args
+        assert kwargs.get("ordering_key") == "abc"
+
+
+def test_pubsub_emitter_redacts_topic_in_status(monkeypatch):
+    monkeypatch.setenv(
+        "OVERRIDE_CALIBRATION_TOPIC",
+        "projects/very-secret-project/topics/override-calib",
+    )
+    monkeypatch.delenv("PUBSUB_EMULATOR_HOST", raising=False)
+    status = pubsub_emitter.transport_status()
+    assert status["pubsub_configured"] is True
+    # Full project name must NOT appear in redacted output.
+    assert "very-secret-project" not in status["topic_redacted"]
+    assert "override-calib" in status["topic_redacted"]
+    assert status["transport"] == "pubsub"
+
+
+def test_pubsub_emitter_status_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("OVERRIDE_CALIBRATION_TOPIC", raising=False)
+    monkeypatch.delenv("PUBSUB_EMULATOR_HOST", raising=False)
+    status = pubsub_emitter.transport_status()
+    assert status["pubsub_configured"] is False
+    assert status["transport"] == "jsonl_fallback"
+    assert "fallback_log_path" in status
+
+
+# ── v0.6 — calibration_emit routes through emitter ─────────────────────────
+
+
+def test_calibration_emit_routes_through_pubsub_emitter(
+    tmp_db, tmp_calibration_log, clean_pubsub_env, monkeypatch,
+):
+    """When no topic is configured, emit_to_calibration falls back to JSONL.
+
+    Same observable behavior as v0.5 → v0.5 calibration tests still pass.
+    """
+    rec = _new_record(override_type="reversal")
+    record_override(rec, db_path=tmp_db)
+    payload = json.loads(tmp_calibration_log.read_text().strip())
+    assert payload["weight"] == 3.0
+    assert payload["override_id"] == rec.override_id
+
+
+def test_calibration_emit_uses_emitter_with_ordering_key(
+    tmp_db, tmp_calibration_log, clean_pubsub_env, monkeypatch,
+):
+    """Verify the emitter receives the override_id as ordering_key."""
+    from unittest.mock import patch
+
+    captured = {}
+
+    def fake_publish(self, message, ordering_key=None):
+        captured["message"] = message
+        captured["ordering_key"] = ordering_key
+        return "jsonl:test"
+
+    rec = _new_record(override_type="reversal")
+    with patch.object(pubsub_emitter.PubSubEmitter, "publish", fake_publish):
+        record_override(rec, db_path=tmp_db)
+    assert captured["ordering_key"] == rec.override_id
+    assert captured["message"]["override_id"] == rec.override_id
+
+
+# ── v0.6 — drift_writer ────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tmp_drift_db(tmp_path: Path) -> Path:
+    return tmp_path / "drift_history.db"
+
+
+def _make_signal(
+    decision_class: str = "pricing.decay",
+    override_rate_14d: float = 0.10,
+    sample_size: int = 100,
+    artifact: str = "sales-os",
+    notes: str = "test signal",
+) -> drift_signal.OverrideDriftSignal:
+    import uuid as _uuid
+    return drift_signal.OverrideDriftSignal(
+        signal_id=str(_uuid.uuid4()),
+        rule_id="OVERRIDE-RATE-DECAY",
+        severity="major",
+        artifact=artifact,
+        decision_class=decision_class,
+        override_rate_14d=override_rate_14d,
+        sample_size=sample_size,
+        notes=notes,
+    )
+
+
+def test_drift_writer_creates_new_scan_and_violation_row(tmp_drift_db):
+    sig = _make_signal()
+    scan_id = drift_writer.write_override_drift_signal(
+        sig, db_path=tmp_drift_db,
+    )
+    assert scan_id is not None
+    assert scan_id.startswith("override-drift-")
+
+    with sqlite3.connect(tmp_drift_db) as conn:
+        scans = conn.execute("SELECT * FROM scans").fetchall()
+        assert len(scans) == 1
+        assert scans[0][2] == "override_engine"  # sources column
+        violations = conn.execute(
+            "SELECT rule_id, severity, artifact, location, scan_id "
+            "FROM violations"
+        ).fetchall()
+        assert len(violations) == 1
+        rule_id, severity, artifact, location, vscan = violations[0]
+        assert rule_id == "OVERRIDE-DRIFT"
+        assert severity == "major"
+        assert artifact == "sales-os"
+        assert location.startswith("pricing.decay@")
+        assert vscan == scan_id
+
+
+def test_drift_writer_idempotent_within_24h(tmp_drift_db):
+    sig = _make_signal()
+    first = drift_writer.write_override_drift_signal(sig, db_path=tmp_drift_db)
+    second = drift_writer.write_override_drift_signal(sig, db_path=tmp_drift_db)
+    assert first is not None
+    # Duplicate (rule_id, artifact, location) within 24h → suppressed.
+    assert second is None
+    with sqlite3.connect(tmp_drift_db) as conn:
+        n_violations = conn.execute(
+            "SELECT COUNT(*) FROM violations WHERE rule_id = 'OVERRIDE-DRIFT'"
+        ).fetchone()[0]
+        assert n_violations == 1
+
+
+def test_drift_writer_different_rates_are_distinct(tmp_drift_db):
+    """Same class at a different rate → distinct location → fresh row."""
+    s1 = _make_signal(override_rate_14d=0.10)
+    s2 = _make_signal(override_rate_14d=0.15)
+    assert drift_writer.write_override_drift_signal(s1, db_path=tmp_drift_db)
+    assert drift_writer.write_override_drift_signal(s2, db_path=tmp_drift_db)
+    with sqlite3.connect(tmp_drift_db) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM violations").fetchone()[0]
+        assert n == 2
+
+
+def test_drift_writer_different_artifacts_are_distinct(tmp_drift_db):
+    s1 = _make_signal(artifact="sales-os")
+    s2 = _make_signal(artifact="gigaton-engine")
+    assert drift_writer.write_override_drift_signal(s1, db_path=tmp_drift_db)
+    assert drift_writer.write_override_drift_signal(s2, db_path=tmp_drift_db)
+    with sqlite3.connect(tmp_drift_db) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM violations").fetchone()[0]
+        assert n == 2
+
+
+def test_drift_writer_schema_matches_gate_8_query_shape(tmp_drift_db):
+    """Write a row, then mimic Gate 8's exact query — must find the row.
+
+    Gate 8 selects scan_id from scans ordered by timestamp, then queries
+    DISTINCT rule_id+artifact from violations on that scan_id with
+    severity='critical'. Override drift is severity='major', so Gate 8
+    in default config WON'T BLOCK on it (correct — major != hard block);
+    but the row must be retrievable by the same shape of query so the
+    upcoming v0.7 drift_writer severity bump (major→critical when
+    sample_size > 500) can hook in without schema migration.
+    """
+    sig = _make_signal()
+    drift_writer.write_override_drift_signal(sig, db_path=tmp_drift_db)
+    with sqlite3.connect(tmp_drift_db) as conn:
+        cur = conn.execute(
+            "SELECT scan_id FROM scans ORDER BY timestamp DESC LIMIT 1"
+        )
+        latest = cur.fetchone()
+        assert latest is not None
+        scan_id = latest[0]
+        rows = conn.execute(
+            "SELECT DISTINCT rule_id, artifact FROM violations "
+            "WHERE scan_id = ? AND severity = 'major'",
+            (scan_id,),
+        ).fetchall()
+        assert rows == [("OVERRIDE-DRIFT", "sales-os")]
+
+
+# ── v0.6 — drift_signal writes through to drift_history ────────────────────
+
+
+def test_drift_signal_write_through_populates_drift_history(
+    tmp_db, tmp_calibration_log, tmp_drift_db, monkeypatch,
+):
+    """When detect_drift_signals fires, drift_history.db gets the row.
+
+    Mocks the drift_writer default-path resolver so the test stays
+    hermetic (doesn't touch the repo's real drift_history.db).
+    """
+    monkeypatch.setattr(
+        drift_writer, "_default_drift_history_db", lambda: tmp_drift_db,
+    )
+
+    _seed_pattern(tmp_db, n=10, decision_class="pricing.decay")
+    signals = drift_signal.detect_drift_signals(
+        decision_counts={"pricing.decay": 100},
+        db_path=tmp_db,
+    )
+    assert len(signals) == 1
+
+    # drift_history.db should now contain the override-drift row that
+    # Gate 8's underlying query could pick up.
+    with sqlite3.connect(tmp_drift_db) as conn:
+        rows = conn.execute(
+            "SELECT rule_id, artifact, severity FROM violations"
+        ).fetchall()
+        assert len(rows) == 1
+        rule_id, artifact, severity = rows[0]
+        assert rule_id == "OVERRIDE-DRIFT"
+        assert severity == "major"
+
+
+def test_drift_signal_write_through_failure_is_swallowed(
+    tmp_db, tmp_calibration_log, monkeypatch,
+):
+    """A write-through failure must NOT raise into the override path.
+
+    Non-Negotiable #1: never break the override flow on a downstream
+    side-effect failure.
+    """
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated drift_history write failure")
+    monkeypatch.setattr(
+        drift_writer, "write_override_drift_signal", _boom,
+    )
+    _seed_pattern(tmp_db, n=10, decision_class="pricing.decay")
+    # Must NOT raise.
+    signals = drift_signal.detect_drift_signals(
+        decision_counts={"pricing.decay": 100},
+        db_path=tmp_db,
+    )
+    assert len(signals) == 1  # detection still returns its in-memory list
+
+
+# ── v0.6 — flush_recent_patterns_to_drift ──────────────────────────────────
+
+
+def test_flush_recent_patterns_writes_to_drift_history(
+    tmp_db, tmp_calibration_log, tmp_drift_db,
+):
+    """Manual flush endpoint analogue — runs detection + writes results."""
+    _seed_pattern(tmp_db, n=10, decision_class="pricing.decay")
+    result = drift_writer.flush_recent_patterns_to_drift(
+        db_path_overrides=tmp_db,
+        db_path_drift=tmp_drift_db,
+        # Provide explicit decision_counts so the fallback estimator
+        # doesn't mask the test intent.
+        decision_counts={"pricing.decay": 100},
+    )
+    assert result["signals_detected"] == 1
+    assert result["signals_written"] == 1
+    assert result["signals_suppressed_by_idempotency"] == 0
+    with sqlite3.connect(tmp_drift_db) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM violations").fetchone()[0]
+        assert n == 1
+
+
+def test_flush_idempotent_on_second_call(
+    tmp_db, tmp_calibration_log, tmp_drift_db,
+):
+    """Second flush within 24h suppresses the same signal."""
+    _seed_pattern(tmp_db, n=10, decision_class="pricing.decay")
+    first = drift_writer.flush_recent_patterns_to_drift(
+        db_path_overrides=tmp_db,
+        db_path_drift=tmp_drift_db,
+        decision_counts={"pricing.decay": 100},
+    )
+    second = drift_writer.flush_recent_patterns_to_drift(
+        db_path_overrides=tmp_db,
+        db_path_drift=tmp_drift_db,
+        decision_counts={"pricing.decay": 100},
+    )
+    assert first["signals_written"] == 1
+    assert second["signals_written"] == 0
+    assert second["signals_suppressed_by_idempotency"] >= 1

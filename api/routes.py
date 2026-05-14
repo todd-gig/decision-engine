@@ -453,6 +453,43 @@ def overrides_list(
         conn.close()
 
 
+# ── v0.6 — Drift write-through + transport status ──────────────────────────
+
+
+@router.post("/v1/overrides/drift/flush", status_code=202)
+def overrides_drift_flush(window_days: int = 1):
+    """Manually flush override drift signals to drift_history.db (admin).
+
+    Runs the v0.6 drift writer over the last `window_days` of overrides.
+    Each signal that fires is written to `drift_sentinel/drift_history.db`
+    as a synthetic scan + violation row (rule_id=OVERRIDE-DRIFT,
+    severity=major). Idempotency: signals already written within 24h on
+    the same (rule_id, artifact, location) are suppressed.
+
+    Why admin-only: writing to drift_history.db affects Gate 8 — a
+    blanket flush from an unauthenticated surface could be used to
+    BLOCK legitimate decisions. (Auth enforcement is out of scope for
+    this endpoint shape; deploy-time policy gates it.)
+    """
+    from engine.human_override import drift_writer
+    window_days = max(1, min(int(window_days), 30))
+    return drift_writer.flush_recent_patterns_to_drift(
+        window_days=window_days,
+    )
+
+
+@router.get("/v1/overrides/transport/status")
+def overrides_transport_status():
+    """Report current Pub/Sub transport state for override calibration.
+
+    Returns whether Pub/Sub is configured (env var set, no emulator) and
+    the JSONL fallback path. Topic name is redacted — never returns the
+    full projects/X/topics/Y string (info disclosure surface).
+    """
+    from engine.human_override import pubsub_emitter
+    return pubsub_emitter.transport_status()
+
+
 # ── Codification Proposals ──────────────────────────────────────────────────
 
 
