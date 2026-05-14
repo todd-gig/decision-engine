@@ -4,11 +4,11 @@ Per spec decision #6 ("Override events emit to OVS-Calibration as outcomes
 immediately — not nightly batch") and decision #1 ("Override events are
 first-class outcomes for OVS-Calibration — weight 3× ordinary outcomes").
 
-v0.5 wire: this is a function-call seam — the consumer side will be wired
-in the OVS-Calibration v0.5 PR. We persist the emitted record to the
-JSONL append-only log used by `engine.learning_loop.LearningStore` so
-that aggregate calibration reads pick up override-derived outcomes
-alongside expected/actual outcome records.
+v0.5 wire: function-call seam writing to JSONL.
+v0.6 wire: route through `pubsub_emitter.PubSubEmitter` so override
+calibration events propagate cross-process to OVS-Calibration. Behavior
+is preserved when no topic is configured — the emitter falls back to the
+same JSONL log v0.5 used, so existing readers + tests stay green.
 
 penrose_signal: weakens
 penrose_dimension: override_rate
@@ -16,7 +16,8 @@ why: An override that doesn't propagate to calibration is a one-off log
 line; an override that propagates is a 3×-weight outcome that pulls the
 calibration vector toward what the operator chose. Without this emission,
 the OVS variance trend (Penrose-Falsification Scoreboard signal #4)
-stays unaffected by human corrections.
+stays unaffected by human corrections. v0.6 graduates the transport from
+local-fs JSONL to Pub/Sub so cross-process consumers participate too.
 """
 from __future__ import annotations
 
@@ -107,14 +108,28 @@ def emit_to_calibration(
         source_engine=record.source_engine,
     )
 
-    log_target = Path(log_path) if log_path else _default_log_path()
+    # v0.6: route through PubSubEmitter. Topic configured → real publish;
+    # otherwise the emitter writes to JSONL itself (same path v0.5 used).
+    # Late import keeps `calibration_emit` importable when pubsub_emitter
+    # would import google.cloud.pubsub_v1 lazily but the module-level
+    # circular reference still resolves cleanly.
+    from .pubsub_emitter import PubSubEmitter
+
+    # Honor explicit `log_path` (used by older tests) by forcing a
+    # fallback-only emitter pointed at that file.
+    if log_path is not None:
+        emitter = PubSubEmitter(topic_path=None, fallback_log_path=Path(log_path))
+    else:
+        emitter = PubSubEmitter()
+
     try:
-        with open(log_target, "a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(emission)) + "\n")
-    except OSError as exc:
+        # ordering_key = override_id so OVS-Calibration consumers can
+        # de-dupe replays and reason about per-override sequencing.
+        emitter.publish(asdict(emission), ordering_key=record.override_id)
+    except Exception as exc:  # pragma: no cover — defense; emitter swallows OSError
         # Don't break the override path — log and continue. Non-Negotiable #1.
         logger.warning(
-            "failed to write calibration emission for %s: %s",
+            "failed to publish calibration emission for %s: %s",
             record.override_id,
             exc,
         )
