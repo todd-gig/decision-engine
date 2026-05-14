@@ -79,7 +79,7 @@ This repo HOSTS the canonical doc — but it is also subject to it. The canonica
 
 ### Doctrine-driven constraints (apply here)
 
-- **B-02 open** — drift_sentinel results not yet feeding back into the 7-gate authorization. Add gate #8 (pre-cert) that queries `drift_history.db` for open critical violations touching the decision domain.
+- **B-02 closed** — drift_sentinel ↔ decision-engine feedback loop wired. `gate_8_drift_check()` in `engine/gates.py:403` queries `drift_history.db` for unresolved critical drift touching the decision's domain; failure is structural → BLOCK. Acknowledgment escape hatch: decision text mentioning the `rule_id` (e.g., "Fix CRIT-008") treats that rule as remediated. 7 unit tests in `tests/test_gate_8_drift.py`. Recursive self-governance loop closed.
 - **B-05 open** — no decision↔gigaton-engine bridge; pricing decisions in gigaton-engine bypass governance.
 - **B-15 open** — Engine Artifact Doctrine: the platform frontend is not engineered up-front; it emerges from `f(user, org, platform.intelligence, resources.available)`. Static HTML in `frontend/` is legacy substrate.
 - **Slack is user-level only** — never auto-post from learning loop, calibration engines, or any scheduled jobs

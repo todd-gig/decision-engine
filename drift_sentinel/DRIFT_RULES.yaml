@@ -154,6 +154,42 @@ rules:
         OR reversibility in [R3, R4] AND no human approval gate
     remediation: Mandatory human approval. Override = doctrine violation.
 
+  - id: CRIT-010
+    name: state_vector_substitution
+    principle_ref: §5.19 (Business Field Theory canonical state vector)
+    severity: critical
+    scope: [codebase, markdown]
+    detection:
+      type: structural
+      check: |
+        Any spec/code asserting a "state vector" that differs from the
+        canonical 9 variables [trust, attention, clarity, desire, urgency,
+        value, friction, social_proof, context_fit]. Variable substitution,
+        addition, or removal requires a new amendment under triad sign-off.
+        This rule fires when:
+          - A Python module defines STATE_VARIABLES / STATE_VECTOR_KEYS /
+            STATE_VECTOR_VARS / similar with a list that is not exactly the
+            canonical 9 (set-equality match, order-insensitive)
+          - A Pydantic / dataclass / TypedDict declaring fields named after
+            >=3 of the canonical 9 ALSO contains a non-canonical state-vector
+            field (e.g. "engagement", "intent", "loyalty" treated as state)
+          - A markdown spec or amendment YAML asserts a state vector whose
+            variable set is not exactly the canonical 9
+      patterns:
+        - 'STATE_(VARIABLES|VECTOR_KEYS|VECTOR_VARS)\s*='
+        - 'class\s+StateVector'
+        - 'state_vector\s*:\s*(dict|Mapping|list)'
+      negative_signal: |
+        For each match, extract the variable set; if it differs from the
+        canonical 9 (and is not inside a docstring quoting the doctrine
+        for explanation), fire. Substitutions in test fixtures with the
+        prefix `pre_mtheory_` or under `tests/historical/` are exempt.
+    remediation: |
+      Use the canonical 9 variables exactly. If a new state variable is
+      genuinely needed, draft an amendment per
+      governance_signoff_bootstrap_protocol and merge under triad
+      sign-off BEFORE introducing it in code. See §5.19.
+
 # ============================================================================
 # MAJOR — DRIFTS FROM CORE PRINCIPLE OR FRAMEWORK (review required)
 # ============================================================================
@@ -418,6 +454,99 @@ rules:
           --role="roles/cloudsql.client"
       PPEME hit this 2026-05-14. See standard_engine_deploy_template.md §10.
 
+  - id: MAJ-016
+    name: decision_without_state_estimate
+    principle_ref: §5.19 (BFT — forward simulation requires state)
+    severity: major
+    scope: [codebase, decision]
+    detection:
+      type: structural
+      check: |
+        Any Decision Certificate with decision_class in [D2, D3, D4, D5, D6]
+        produced without `state_vector_at_decision` field (or with an empty
+        / 0-length state vector). Decision class D1 is exempt (auto-execute
+        trivial-reversible, no forward simulation required).
+        Fires on:
+          - decision-engine certificate payloads in `certificates/` / API
+            responses missing the field
+          - Test fixtures asserting D2-D6 certificates without state_vector
+          - Code paths that emit decision records via `_emit_certificate(...)`
+            with no upstream call to a registered state_estimator
+      patterns:
+        - 'decision_class\s*[:=]\s*["'']?D[2-6]'
+        - 'EC-[A-Z0-9-]+'
+      negative_signal: |
+        Match the surrounding artifact / function — if no
+        `state_vector_at_decision` or `state_estimate` field is present
+        within 30 lines (code) or in the certificate JSON schema, fire.
+    remediation: |
+      Attach state vector estimate from a registered state_estimator
+      (PPEME `/v1/state/estimate-from-events` or equivalent) before
+      issuing the certificate. Persist with the EC. §5.19 + ppeme/api/
+      state_estimator.py.
+
+  - id: MAJ-017
+    name: forecast_without_confidence_bands
+    principle_ref: §5.19 (BFT — forecasts must carry distribution)
+    severity: major
+    scope: [codebase, decision, markdown]
+    detection:
+      type: structural
+      check: |
+        Any artifact citing a forecast / prediction / projection value
+        that lacks accompanying `{p10, p50, p90}` distribution (or a
+        named equivalent: `confidence_band`, `forecast_distribution`,
+        `prediction_interval`). Single-point forecasts are doctrine drift
+        per §5.19 falsifiability requirement.
+      patterns:
+        - 'forecast\s*[:=]'
+        - 'predicted_(revenue|conversion|ltv|outcome)'
+        - 'projection\s*[:=]'
+      negative_signal: |
+        For each match, search within ±20 lines for `p10`, `p50`, `p90`,
+        `confidence_band`, `distribution`, `prediction_interval`,
+        `monte_carlo`. If none present, fire. Forecast values inside
+        test fixtures named `test_*_fixture.py` are exempt only if the
+        test asserts the absence (negative test).
+    remediation: |
+      Compute forecasts with Monte Carlo or equivalent stochastic
+      simulation; surface p10/p50/p90 bands alongside the central
+      estimate. PPEME `engine/simulation.py` returns the canonical
+      shape. §5.19 falsifiability threshold + Master Calculator.
+
+  - id: MAJ-018
+    name: uncalibrated_forecast_as_authority
+    principle_ref: §5.19 (BFT — pre-Mtheory non-authoritative)
+    severity: major
+    scope: [codebase, decision, markdown]
+    detection:
+      type: structural
+      check: |
+        A forecast from a decision class with calibration status
+        `pre_mtheory` (variance > p50 15% over a 30-day window, OR no
+        30-day calibration window available yet) cited as an authoritative
+        input to a downstream decision. Fires when:
+          - A decision certificate references `forecast_id` whose source
+            decision class has `calibration_status: pre_mtheory` in
+            PPEME's calibration table
+          - A spec/memo recommends action on the basis of a forecast
+            without disclosing its calibration status
+          - Pre-mtheory forecasts not labeled in surfaced UI (recommendation
+            panels, dashboards, weekly reports)
+      patterns:
+        - 'forecast_id\s*[:=]'
+        - 'predicted_(revenue|conversion|ltv)\s*[:=]'
+      negative_signal: |
+        Cross-reference forecast_id with PPEME calibration table. If
+        `calibration_status == pre_mtheory` AND the artifact does not
+        carry an explicit `pre_mtheory: true` / `non_authoritative: true`
+        / `uncalibrated_warning` marker, fire.
+    remediation: |
+      Either (a) label the forecast `pre_mtheory: true` and demote it
+      from authoritative input, or (b) wait for the decision class to
+      reach calibration threshold (p50 ≤ 15% over 30 days). §5.19
+      production-grade definition.
+
 # ============================================================================
 # MINOR — STYLISTIC / TACTICAL DEVIATION (log and track)
 # ============================================================================
@@ -490,6 +619,70 @@ rules:
       check: |
         Task has description but no monitoring_metric / success criteria
     remediation: Add measurable outcome. "Done when X is true."
+
+  - id: MIN-007
+    name: interaction_without_effect_vector
+    principle_ref: §5.19 (BFT — interaction catalog completeness)
+    severity: minor
+    severity_escalation:
+      escalates_to: major
+      after_days: 30
+      reason: |
+        Interactions uncatalogued for >30 days indicate systemic
+        catalog drift; PPEME state-estimator + Master Calculator lose
+        forward-simulation accuracy proportional to uncatalogued surface.
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        A production user-facing interaction surface (route handler,
+        page component, gamification event emitter, sales-OS opportunity
+        action) without a matching entry in PPEME's interaction catalog
+        carrying a non-null `delta_i` (effect vector) field.
+        Fires on:
+          - gigaton-ui-system page components rendering an `<a>`,
+            `<button>`, or form submission not registered in
+            interaction_catalog by `interaction_id`
+          - HME event emitters firing events whose `event_type` has no
+            interaction_catalog mapping
+          - Decision-engine handlers wrapping `pipeline.process(...)`
+            with an upstream surface not catalog-registered
+      patterns:
+        - 'interaction_id\s*[:=]'
+        - 'emit_event\s*\('
+        - 'pipeline\.process\s*\('
+      negative_signal: |
+        Cross-reference with PPEME interaction_catalog table. If no
+        matching row OR `delta_i` is null, fire MINOR. If interaction
+        first observed > 30 days ago (per first_seen_at in catalog
+        ingestion log), escalate to MAJOR.
+    remediation: |
+      Register the interaction in PPEME's interaction_catalog with a
+      measured or estimated `delta_i` effect vector. §5.19 Interaction
+      Model. Confidence may start low; calibration accrues over time.
+
+  - id: MIN-008
+    name: interaction_without_cost
+    principle_ref: §5.19 (BFT — interaction ranking requires cost)
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        An interaction_catalog entry exists but has no `estimated_cost`
+        field (or `estimated_cost == null`). Recommendation panels rank
+        interactions by `delta_i / estimated_cost`; missing cost
+        eliminates the entry from ranked output.
+      patterns:
+        - 'interaction_catalog\.'
+        - 'INSERT INTO interaction_catalog'
+      negative_signal: |
+        For each catalog entry, if `estimated_cost` is null and the
+        entry is referenced by a recommendation/ranking surface, fire.
+    remediation: |
+      Populate estimated_cost (currency, time, or normalized units —
+      pick one and stay consistent within a vertical). May be a rough
+      estimate; calibration improves over time. §5.19 Interaction Model.
 
 # ============================================================================
 # INFO — APPROVED EXCEPTIONS / DOCUMENTED OVERRIDES
