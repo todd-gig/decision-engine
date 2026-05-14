@@ -262,6 +262,25 @@ def process_decision(
     logger.log_execution(exec_packet)
     result.execution_packet = exec_packet
 
+    # ── HME event emission (fire-and-forget) ──
+    # Closes the loop between decision execution + HME coaching/analysis.
+    # Silently no-ops on BLOCK/NEEDS_DATA, network failure, or when
+    # GATEWAY_URL is unset (local dev).
+    try:
+        from engine.hme_event_emitter import emit_decision_event
+        emit_decision_event(
+            decision_id=str(getattr(decision, "decision_id", "") or ""),
+            verdict=exec_packet.verdict.value if hasattr(exec_packet.verdict, "value") else str(exec_packet.verdict),
+            user_id=getattr(decision, "owner", None) or None,
+            decision_class=getattr(
+                getattr(decision, "decision_class", None), "value", None,
+            ),
+            requested_action=getattr(decision, "requested_action", None),
+        )
+    except Exception:
+        # Catch-all: pipeline NEVER fails because of HME emission.
+        pass
+
     # ──────────────────────────────────────────
     # STAGE 8: STATE MACHINE TRANSITION
     # ──────────────────────────────────────────
