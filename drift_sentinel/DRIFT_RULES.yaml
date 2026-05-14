@@ -15,7 +15,7 @@
 #   detection: how the scanner identifies a violation (regex/structural/missing-field)
 #   remediation: short fix instructions
 
-version: 1.1.0
+version: 1.2.0
 generated: 2026-05-14
 canonical_ref: GIGATON_CANONICAL_FIRST_PRINCIPLES.md
 
@@ -643,6 +643,85 @@ rules:
       Every engine ships either Penrose-weakening evidence, Penrose-
       strengthening evidence, or neutral instrumentation — never undeclared.
 
+  - id: MAJ-020
+    name: dockerfile_alembic_discipline
+    principle_ref: §6, standard_engine_deploy_template.md §1-§2
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        An engine repo that has `alembic.ini` and/or an `alembic/`
+        directory at its root MUST COPY both into its Docker image AND
+        have a `start.sh` that runs `alembic upgrade head` before
+        launching the app. Otherwise the container boots without applying
+        migrations and Cloud Run keeps serving the prior (or unmigrated)
+        schema. This is HME bug #4 from the 2026-05-13 cascade — the
+        Dockerfile only copied `api/`, so `alembic upgrade head` logged
+        `No config file alembic.ini found` at every cold start.
+
+        Fires on:
+          - Dockerfile in a repo where `<repo>/alembic.ini` exists but
+            the file contains no `COPY ... alembic.ini` directive
+          - Dockerfile in a repo where `<repo>/alembic/` exists but the
+            file contains no `COPY ... alembic` directive
+          - Repo has `start.sh` but the script lacks
+            `alembic upgrade head` (12-factor startup migration)
+      patterns:
+        - 'COPY\s+.*alembic'
+        - 'alembic upgrade head'
+      negative_signal: |
+        For each Dockerfile, look up sibling `alembic.ini` /
+        `alembic/`. If either exists and is not COPY'd into the image,
+        fire. Separately, if `start.sh` exists and does not run
+        `alembic upgrade head`, also fire.
+    remediation: |
+      Per standard_engine_deploy_template.md §1-§2:
+        COPY --chown=app:app alembic/      /app/alembic/
+        COPY --chown=app:app alembic.ini   /app/alembic.ini
+        COPY --chown=app:app start.sh      /app/start.sh
+        RUN chmod +x /app/start.sh
+        CMD ["/app/start.sh"]
+      AND in start.sh:
+        if [[ -n "${DB_HOST:-}" || -n "${DATABASE_URL:-}" ]]; then
+          alembic upgrade head
+        fi
+        exec uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8080}"
+
+  - id: MAJ-021
+    name: cloud_sql_url_discipline
+    principle_ref: §6, §7, standard_engine_deploy_template.md §3
+    severity: major
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Database URL construction targeting a Cloud SQL Auth Proxy
+        unix-socket host (`/cloudsql/<project>:<region>:<instance>`)
+        MUST use `sqlalchemy.engine.URL.create(...,
+        query={"host": socket_path})`. Raw f-strings and `+`
+        concatenation produce URLs whose colons in the socket path
+        corrupt psycopg2's parser, which silently falls back to the
+        default socket `/var/run/postgresql/.s.PGSQL.5432` → connection
+        fails. HME bug #6 from the 2026-05-13 cascade.
+      patterns:
+        - 'f["''](?:postgresql|postgres)\+?\w*://[^"'']*@/cloudsql/[^"'']+["'']'
+        - '["''](?:postgresql|postgres)\+?\w*://[^"'']*\{(?:host|socket)[^"'']*\}'
+      negative_signal: |
+        For each match, scan ±15 lines for `URL.create(`. If present,
+        the file uses the safe pattern; skip. Lines with
+        `# noqa: MAJ-021` are also skipped.
+    remediation: |
+      Per standard_engine_deploy_template.md §3:
+        from sqlalchemy.engine import URL
+        if host.startswith("/"):  # Cloud SQL Auth Proxy socket
+            url = URL.create(
+                drivername="postgresql+psycopg2",
+                username=user, password=password, database=name,
+                query={"host": host},
+            ).render_as_string(hide_password=False)
+      Never f-string a socket-path host. Same pattern in alembic/env.py.
+
 # ============================================================================
 # MINOR — STYLISTIC / TACTICAL DEVIATION (log and track)
 # ============================================================================
@@ -870,7 +949,7 @@ source_routing:
       - bella-byte
       - playa-del-carmen
     skip_dirs: [node_modules, __pycache__, .git, .next, dist, build, .turbo]
-    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
+    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MAJ-013, MAJ-014, MAJ-015, MAJ-020, MAJ-021, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
 
   local_docs:
     root: /Users/admin/Downloads
