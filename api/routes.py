@@ -38,6 +38,7 @@ from .schemas import (
     CalibrationRevisionCreateRequest,
     NetworkValueRecordRequest,
     ModuleProposeRequest, ModuleSimulateRequest,
+    CausalChainWalkRequest, CounterfactualScoreRequest,
 )
 
 router = APIRouter()
@@ -743,6 +744,172 @@ def calibration_revisions_create(payload: CalibrationRevisionCreateRequest):
         raise HTTPException(status_code=422, detail=str(e))
 
     return write_revision(rev)
+
+
+# ── OVS-Calibration v0.6: causal-chain + counterfactual + adapters ──────────
+
+
+@router.post("/v1/calibration/causal-chain/walk")
+def calibration_causal_chain_walk(payload: CausalChainWalkRequest):
+    """Walk the causal chain backwards from an outcome through up to 4 hops.
+
+    Either `chain_links` (caller pre-walked) or `resolver_decisions`
+    (caller-supplied lookup table) must be provided; otherwise returns an
+    empty chain (no synthesis — Non-Negotiable #6).
+    """
+    from engine.ovs_calibration import (
+        DecisionCertificateLike, DecisionProjection, OutcomeEventLike,
+        walk_causal_chain,
+    )
+    dec = DecisionCertificateLike(
+        decision_certificate_id=payload.decision_certificate.decision_certificate_id,
+        decision_class=payload.decision_certificate.decision_class,
+        projection=DecisionProjection(
+            metric=payload.decision_certificate.projection.metric,
+            expected_value=payload.decision_certificate.projection.expected_value,
+            horizon_days=payload.decision_certificate.projection.horizon_days,
+            confidence=payload.decision_certificate.projection.confidence,
+        ),
+        issued_at=payload.decision_certificate.issued_at,
+    )
+    out = OutcomeEventLike(
+        id=payload.outcome_event.id,
+        metric=payload.outcome_event.metric,
+        observed_value=payload.outcome_event.observed_value,
+        observed_at=payload.outcome_event.observed_at,
+        source=payload.outcome_event.source,
+        expected_value=payload.outcome_event.expected_value,
+    )
+
+    chain_links = None
+    if payload.chain_links is not None:
+        chain_links = [hop.model_dump() for hop in payload.chain_links]
+
+    resolver = None
+    if payload.resolver_decisions:
+        resolver_map = dict(payload.resolver_decisions)
+        def _resolver(decision_id: str):
+            return resolver_map.get(decision_id)
+        resolver = _resolver
+
+    links = walk_causal_chain(
+        dec, out,
+        chain_links=chain_links,
+        decision_resolver=resolver,
+        persist=payload.persist,
+    )
+    return {
+        "links": links,
+        "count": len(links),
+        "persisted": payload.persist,
+    }
+
+
+@router.post("/v1/calibration/counterfactual/score", status_code=201)
+def calibration_counterfactual_score(payload: CounterfactualScoreRequest):
+    """Score one counterfactual and optionally persist.
+
+    Returns 200 with `{score: None, reason: ...}` when the case isn't
+    observable (never synthesizes). Returns 201 with the persisted record
+    when persist=True and a score was produced.
+    """
+    from engine.ovs_calibration import (
+        score_counterfactual, persist_counterfactual,
+    )
+    try:
+        score = score_counterfactual(
+            rejected_decision_id=payload.rejected_decision_id,
+            observed_alternative_outcome_ids=payload.observed_alternative_outcome_ids,
+            kind=payload.kind,
+            rejected_projection_value=payload.rejected_projection_value,
+            observed_alternative_value=payload.observed_alternative_value,
+            alternative_chosen_id=payload.alternative_chosen_id,
+            evidence_metadata=payload.evidence_metadata,
+            reasoning=payload.reasoning,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if score is None:
+        # 200 with explanatory body — not an error, just unobservable.
+        return {
+            "score": None,
+            "persisted": False,
+            "reason": (
+                "counterfactual unobservable per spec §Counterfactual handling; "
+                "no synthesis (Non-Negotiable #6)"
+            ),
+            "kind": payload.kind,
+            "rejected_decision_id": payload.rejected_decision_id,
+        }
+
+    body = {
+        "score": {
+            "rejected_decision_id": score.rejected_decision_id,
+            "kind": score.kind,
+            "alternative_chosen_id": score.alternative_chosen_id,
+            "observed_alternative_outcome_ids": list(
+                score.observed_alternative_outcome_ids
+            ),
+            "inferred_counterfactual_score": score.inferred_counterfactual_score,
+            "confidence": score.confidence,
+            "reasoning": score.reasoning,
+            "evidence_metadata": dict(score.evidence_metadata),
+        },
+        "persisted": False,
+    }
+    if payload.persist:
+        try:
+            persisted = persist_counterfactual(score, scored_by=payload.scored_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        body["persisted"] = True
+        body["record"] = persisted
+    return body
+
+
+@router.get("/v1/calibration/counterfactual/{record_id}")
+def calibration_counterfactual_get(record_id: str):
+    """Fetch one CounterfactualRecord by id."""
+    from engine.ovs_calibration import get_counterfactual, verify_counterfactual
+    rec = get_counterfactual(record_id)
+    if rec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"counterfactual record {record_id!r} not found",
+        )
+    return {
+        "id": rec.id,
+        "rejected_decision_id": rec.rejected_decision_id,
+        "alternative_chosen_id": rec.alternative_chosen_id,
+        "observed_alternative_outcome_ids": list(
+            rec.observed_alternative_outcome_ids
+        ),
+        "kind": rec.kind,
+        "inferred_counterfactual_score": rec.inferred_counterfactual_score,
+        "confidence": rec.confidence,
+        "reasoning": rec.reasoning,
+        "scored_at": rec.scored_at,
+        "scored_by": rec.scored_by,
+        "hmac": rec.hmac,
+        "evidence_metadata": dict(rec.evidence_metadata),
+        "schema_version": rec.schema_version,
+        "verified": verify_counterfactual(record_id),
+    }
+
+
+@router.get("/v1/calibration/adapters/status")
+def calibration_adapters_status():
+    """Per-entity adapter health snapshot.
+
+    Returns one row per adapter (Carmen Beach, Ti Solutions, Gigaton-UI)
+    with subscription path, configured flag, last message timestamp, and
+    message counts. Safe to call even when GCP isn't configured —
+    adapters report `configured=false` rather than failing.
+    """
+    from engine.ovs_calibration.adapters import all_adapters
+    rows = [adapter.status().to_dict() for adapter in all_adapters()]
+    return {"items": rows, "count": len(rows)}
 
 
 @router.post("/v1/codification/analyze")
