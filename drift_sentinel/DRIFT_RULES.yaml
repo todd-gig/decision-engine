@@ -195,6 +195,14 @@ rules:
     principle_ref: §6 (audit envelope), §7 (concurrency safety)
     severity: critical
     scope: [codebase]
+    # Test fixture that intentionally demonstrates the anti-pattern in
+    # string literals to verify the scanner catches it. Excluding the
+    # fixture file itself is doctrine-aligned — the scanner should not
+    # flag its own self-test inputs. Per-rule exclusion (not a blanket
+    # tests/ blacklist) preserves coverage of every other rule against
+    # tests/. WHY: false-positive cluster on 2026-05-14 scan (21/29 CRIT).
+    path_exclude:
+      - "tests/test_drift_preventive_rules.py"
     detection:
       type: structural
       check: |
@@ -949,7 +957,7 @@ source_routing:
       - bella-byte
       - playa-del-carmen
     skip_dirs: [node_modules, __pycache__, .git, .next, dist, build, .turbo]
-    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MAJ-013, MAJ-014, MAJ-015, MAJ-020, MAJ-021, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
+    rules_applied: [CRIT-001, CRIT-003, CRIT-007, CRIT-008, CRIT-009, CRIT-011, MAJ-001, MAJ-004, MAJ-005, MAJ-006, MAJ-007, MAJ-009, MAJ-013, MAJ-014, MAJ-015, MAJ-019, MAJ-020, MAJ-021, MIN-001, MIN-002, MIN-003, MIN-004, MIN-005, MIN-009]
 
   local_docs:
     root: /Users/admin/Downloads
