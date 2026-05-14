@@ -66,17 +66,37 @@ steps:
           PROJECT_NUMBER="$$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')"
           RUNTIME_SA="$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
-          # Self-heal: grant the runtime SA secretmanager.secretAccessor on
-          # this specific secret. Idempotent — re-grants are no-ops.
-          # Without this, the deploy fails with:
-          #   "Permission denied on secret: ... for Revision service account
-          #    ...-compute@developer.gserviceaccount.com"
-          gcloud secrets add-iam-policy-binding drift-gh-token \
+          # Best-effort: grant runtime SA secretmanager.secretAccessor on this
+          # secret. The Cloud Build service account typically does NOT have
+          # roles/secretmanager.admin, so this often fails — we check whether
+          # the binding actually exists afterwards and surface a clear error
+          # only when both the grant attempt AND the verification fail. Per
+          # feedback_deploy_failure_investigation.md (root-cause first, never
+          # silent failures).
+          GRANT_OUT=$$(gcloud secrets add-iam-policy-binding drift-gh-token \
             --member="serviceAccount:$${RUNTIME_SA}" \
             --role="roles/secretmanager.secretAccessor" \
-            --quiet \
-            >/dev/null 2>&1 \
-            || echo "[deploy] WARN: could not grant secret access to $${RUNTIME_SA} (may already be granted)"
+            --quiet 2>&1) || GRANT_FAILED=1
+
+          # Verify the binding exists either way (may have been granted by
+          # a project-owner ahead of time).
+          BINDING_EXISTS=$$(gcloud secrets get-iam-policy drift-gh-token \
+            --format='value(bindings.members)' 2>/dev/null \
+            | grep -c "$${RUNTIME_SA}" || true)
+
+          if [[ "$$BINDING_EXISTS" -gt 0 ]]; then
+            echo "[deploy] runtime SA has secretmanager.secretAccessor on drift-gh-token"
+          else
+            echo "[deploy] ERROR: runtime SA $${RUNTIME_SA} is NOT bound to drift-gh-token."
+            echo "[deploy] grant attempt output:"
+            echo "$$GRANT_OUT" | sed 's/^/[deploy]   /'
+            echo "[deploy] Fix manually as a project owner:"
+            echo "[deploy]   gcloud secrets add-iam-policy-binding drift-gh-token \\"
+            echo "[deploy]     --member='serviceAccount:$${RUNTIME_SA}' \\"
+            echo "[deploy]     --role='roles/secretmanager.secretAccessor' \\"
+            echo "[deploy]     --project=$PROJECT_ID"
+            exit 1
+          fi
         else
           echo "[deploy] drift-gh-token not set — GitHub adapter will yield 0 artifacts"
         fi
