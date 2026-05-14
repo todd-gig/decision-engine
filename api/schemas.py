@@ -299,3 +299,83 @@ class ProposalApproveAndCertifyRequest(BaseModel):
     schema_version: str = Field(..., min_length=1)
     additional_signers: list[str] = Field(default_factory=list)
     shipped_pr_url: Optional[str] = None
+
+
+# ── OVS-Calibration ─────────────────────────────────────────────────────────
+
+
+class OutcomeSourceCreateRequest(BaseModel):
+    """POST /v1/calibration/sources — register a new outcome source.
+
+    Note: the `schema_def` field carries the source's payload schema; we
+    avoid `schema` to dodge Pydantic's BaseModel.schema() name collision.
+    """
+    name: str = Field(..., min_length=1)
+    kind: Literal["revenue", "conversion", "operational", "satisfaction", "external"]
+    entity: str = Field(..., min_length=1)
+    ingestion_contract: Literal["pubsub", "webhook", "polling"]
+    schema_def: dict = Field(default_factory=dict, alias="schema")
+    owner: str = Field(..., min_length=1)
+    health_status: Literal["healthy", "degraded", "offline", "unknown"] = "unknown"
+    decision_class_metric_map: dict = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+class DecisionProjectionPayload(BaseModel):
+    metric: str = Field(..., min_length=1)
+    expected_value: float
+    horizon_days: int = 0
+    confidence: float = 0.0
+
+
+class DecisionCertificatePayload(BaseModel):
+    decision_certificate_id: str = Field(..., min_length=1)
+    decision_class: str = Field(..., min_length=1)
+    projection: DecisionProjectionPayload
+    issued_at: str = ""
+
+
+class OutcomeEventPayload(BaseModel):
+    id: str = Field(..., min_length=1)
+    metric: str = Field(..., min_length=1)
+    observed_value: float
+    observed_at: str = ""
+    source: str = ""
+    expected_value: Optional[float] = None
+
+
+class ComputeVarianceRequest(BaseModel):
+    """POST /v1/calibration/compute-variance — compute variance for one pair."""
+    decision_certificate: DecisionCertificatePayload
+    outcome_event: OutcomeEventPayload
+    metric_kind_override: Optional[Literal["proportional", "absolute"]] = None
+    neutral_band_pct: float = Field(default=0.10, ge=0.0, le=1.0)
+
+
+class AttributeRequest(BaseModel):
+    """POST /v1/calibration/attribute — attribute one (decision, outcome)."""
+    decision_certificate: DecisionCertificatePayload
+    outcome_event: OutcomeEventPayload
+    decision_entity: str = ""
+    horizon_days: Optional[int] = None
+    persist: bool = True
+
+
+class CalibrationRevisionCreateRequest(BaseModel):
+    """POST /v1/calibration/revisions — sign + persist a calibration revision."""
+    dimension: str = Field(..., min_length=1)
+    before_value: float
+    after_value: float
+    evidence_window_start: str = Field(..., min_length=1)
+    evidence_window_end: str = Field(..., min_length=1)
+    evidence_outcome_ids: list[str] = Field(default_factory=list)
+    computation_version: str = Field(..., min_length=1)
+    signed_by: str = Field(..., min_length=1)
+    reasoning: str = Field(..., min_length=20)
+    # Authority-gate inputs
+    previous_computation_version: Optional[str] = None
+    is_new_dimension: bool = False
+    is_removal: bool = False
+    additional_signers: list[str] = Field(default_factory=list)
+    bypass_authority: bool = False  # for explicit dual-signed admin paths
