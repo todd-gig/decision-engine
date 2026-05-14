@@ -14,6 +14,15 @@ drift_sentinel/human_overrides.db
 drift_sentinel/human_overrides.db-*
 drift_sentinel/codification_proposals.db
 drift_sentinel/codification_proposals.db-*
+drift_sentinel/llm_audit.db
+drift_sentinel/llm_audit.db-*
+
+# OVS-Calibration runtime state (per-deploy DB; HMAC-signed MD twins are
+# emitted into calibration-revisions/ at runtime — do not commit local dev
+# artifacts. Production deploys mount this directory from durable storage.)
+drift_sentinel/ovs_calibration.db
+drift_sentinel/ovs_calibration.db-*
+calibration-revisions/
 
 # Environment
 .env
