@@ -25,11 +25,81 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# UUID adjacent to "initiative" keyword — used to detect initiative-related decisions
+_INITIATIVE_UUID_RE = re.compile(
+    r"initiative[\s_:/-]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
+
+
+def infer_initiative_id(*texts: Optional[str]) -> Optional[str]:
+    """Scan text for an initiative_id UUID adjacent to 'initiative' keyword."""
+    for t in texts:
+        if not t:
+            continue
+        m = _INITIATIVE_UUID_RE.search(t)
+        if m:
+            return m.group(1)
+    return None
+
+
+def emit_initiative_webhook(
+    *,
+    initiative_id: str,
+    decision_id: str,
+    to_stage: str = "IN_PROGRESS",
+    reasoning: str = "decision-engine AUTO_EXECUTE",
+    decision_certificate_id: Optional[str] = None,
+) -> bool:
+    """POST /v1/webhooks/inferred-transition for an initiative-related decision.
+
+    Fire-and-forget. Never raises. Returns True on 2xx, False on any failure.
+    """
+    gateway_url = os.environ.get("GATEWAY_URL") or os.environ.get("HME_EVENTS_URL")
+    if not gateway_url:
+        return False
+    if os.environ.get("DECISION_HME_EMIT_DISABLED") == "1":
+        return False
+
+    payload = {
+        "initiative_id": initiative_id,
+        "to_stage": to_stage,
+        "reasoning": f"[decision-engine {decision_id}] {reasoning}",
+        "source_engine": "decision-engine",
+    }
+    if decision_certificate_id:
+        payload["decision_certificate_id"] = decision_certificate_id
+
+    url = gateway_url.rstrip("/") + "/v1/webhooks/inferred-transition"
+    headers = {"Content-Type": "application/json"}
+
+    token = _identity_token(gateway_url)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+        logger.info(
+            "hme_event_emitter: webhook %s for initiative %s failed: %s",
+            url, initiative_id, exc,
+        )
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _VERDICT_TO_EVENT_TYPE = {

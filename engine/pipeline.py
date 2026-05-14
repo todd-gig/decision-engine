@@ -262,21 +262,48 @@ def process_decision(
     logger.log_execution(exec_packet)
     result.execution_packet = exec_packet
 
-    # ── HME event emission (fire-and-forget) ──
-    # Closes the loop between decision execution + HME coaching/analysis.
-    # Silently no-ops on BLOCK/NEEDS_DATA, network failure, or when
-    # GATEWAY_URL is unset (local dev).
+    # ── HME emission (fire-and-forget, two channels) ──
+    # 1. Gamification event on every positive verdict — feeds coaching+analysis
+    # 2. Initiative webhook when AUTO_EXECUTE + initiative_id inferrable —
+    #    advances the initiative's lifecycle stage automatically
     try:
-        from engine.hme_event_emitter import emit_decision_event
+        from engine.hme_event_emitter import (
+            emit_decision_event,
+            emit_initiative_webhook,
+            infer_initiative_id,
+        )
+
+        _verdict_str = (
+            exec_packet.verdict.value
+            if hasattr(exec_packet.verdict, "value")
+            else str(exec_packet.verdict)
+        )
+        _decision_id = str(getattr(decision, "decision_id", "") or "")
+        _action = getattr(decision, "requested_action", None)
+        _title = getattr(decision, "title", None)
+        _evidence = " ".join(getattr(decision, "evidence_refs", []) or [])
+
         emit_decision_event(
-            decision_id=str(getattr(decision, "decision_id", "") or ""),
-            verdict=exec_packet.verdict.value if hasattr(exec_packet.verdict, "value") else str(exec_packet.verdict),
+            decision_id=_decision_id,
+            verdict=_verdict_str,
             user_id=getattr(decision, "owner", None) or None,
             decision_class=getattr(
                 getattr(decision, "decision_class", None), "value", None,
             ),
-            requested_action=getattr(decision, "requested_action", None),
+            requested_action=_action,
         )
+
+        if _verdict_str == "AUTO_EXECUTE":
+            initiative_id = infer_initiative_id(_action, _title, _evidence)
+            if initiative_id is not None:
+                emit_initiative_webhook(
+                    initiative_id=initiative_id,
+                    decision_id=_decision_id,
+                    to_stage="IN_PROGRESS",
+                    reasoning=(
+                        f"AUTO_EXECUTE on {(_action or 'action')[:80]}"
+                    ),
+                )
     except Exception:
         # Catch-all: pipeline NEVER fails because of HME emission.
         pass
