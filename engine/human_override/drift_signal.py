@@ -7,15 +7,19 @@ in that class over rolling 14d) climbs ≥10%, we log a structured
 DriftSignal row.
 
 v0.5 scope: detect + log + queue in `override_drift_signals` table.
-Integration with `drift_sentinel/` (writing into `drift_history.db`
-violations table) is out of scope — separate concern, separate PR.
+v0.6 scope: write-through into `drift_sentinel/drift_history.db` so
+Gate 8 (`gate_8_drift_check`) BLOCKS new decisions in domains with
+unresolved override-drift. The write goes through `drift_writer.py`
+which is idempotent on (rule_id, artifact, location) within 24h.
 
 penrose_signal: weakens
 penrose_dimension: override_rate
 why: Codified patterns can rot. A module that used to need no overrides
 but now needs many is "decaying logic" — the canary is the override
 rate. Emitting a drift signal closes the loop with drift_sentinel, which
-already governs decisions about the engine itself (B-02 closed).
+already governs decisions about the engine itself (B-02 closed). v0.6
+makes that loop hot — the signal lands in the same DB the gate reads
+during the pipeline, so the next decision feels the override drift.
 """
 from __future__ import annotations
 
@@ -48,6 +52,17 @@ class OverrideDriftSignal:
     override_rate_14d: float
     sample_size: int
     notes: str
+
+
+def _resolve_decision_class_safe(row) -> str:
+    """Light wrapper around patterns._resolve_decision_class.
+
+    Imported by drift_writer.flush_recent_patterns_to_drift; lives here
+    rather than in patterns.py so drift_writer doesn't pull in the full
+    clustering machinery just to resolve a class name.
+    """
+    from .patterns import _resolve_decision_class
+    return _resolve_decision_class(row)
 
 
 def detect_drift_signals(
@@ -129,6 +144,22 @@ def detect_drift_signals(
 
     if signals:
         _persist_signals(signals, db_path=db_path)
+        # v0.6 write-through — push each signal to drift_history.db so
+        # Gate 8 picks it up. Idempotency check is done inside the writer
+        # (don't double-write the same (rule_id, artifact, location) in 24h).
+        # Errors here NEVER raise into the override path — Non-Negotiable #1.
+        try:
+            from . import drift_writer
+            for s in signals:
+                try:
+                    drift_writer.write_override_drift_signal(s)
+                except Exception as exc:  # pragma: no cover — defense
+                    logger.warning(
+                        "[human_override.drift_signal] drift_writer "
+                        "write failed for %s: %s", s.decision_class, exc,
+                    )
+        except ImportError:  # pragma: no cover — drift_writer ships with engine
+            pass
     return signals
 
 
