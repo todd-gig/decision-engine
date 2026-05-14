@@ -34,6 +34,8 @@ from .schemas import (
     OverrideRecordRequest, ProposalCreateRequest, ProposalApproveRequest,
     ProposalSimSummary, AnalyzerRunRequest, AIInvokeRequest,
     SweepRunRequest, ProposalApproveAndCertifyRequest,
+    OutcomeSourceCreateRequest, ComputeVarianceRequest, AttributeRequest,
+    CalibrationRevisionCreateRequest,
 )
 
 router = APIRouter()
@@ -514,6 +516,194 @@ def proposals_approve(proposal_id: str, payload: ProposalApproveRequest):
         raise HTTPException(status_code=422, detail=str(e))
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── OVS-Calibration Engine v0.5 ─────────────────────────────────────────────
+
+
+@router.get("/v1/calibration/sources")
+def calibration_sources_list(
+    kind: Optional[str] = None,
+    entity: Optional[str] = None,
+):
+    """List registered outcome sources."""
+    from engine.ovs_calibration import list_sources
+    items = list_sources(kind=kind, entity=entity)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/v1/calibration/sources", status_code=201)
+def calibration_sources_create(payload: OutcomeSourceCreateRequest):
+    """Register a new outcome source."""
+    from engine.ovs_calibration import OutcomeSource, register_source
+    try:
+        src = OutcomeSource(
+            name=payload.name,
+            kind=payload.kind,
+            entity=payload.entity,
+            ingestion_contract=payload.ingestion_contract,
+            schema=payload.schema_def,
+            owner=payload.owner,
+            health_status=payload.health_status,
+            decision_class_metric_map=payload.decision_class_metric_map,
+        )
+        return register_source(src)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/v1/calibration/compute-variance")
+def calibration_compute_variance(payload: ComputeVarianceRequest):
+    """Compute variance for a (decision_certificate, outcome_event) pair."""
+    from engine.ovs_calibration import (
+        DecisionCertificateLike, DecisionProjection, OutcomeEventLike,
+        compute_variance,
+    )
+    dec = DecisionCertificateLike(
+        decision_certificate_id=payload.decision_certificate.decision_certificate_id,
+        decision_class=payload.decision_certificate.decision_class,
+        projection=DecisionProjection(
+            metric=payload.decision_certificate.projection.metric,
+            expected_value=payload.decision_certificate.projection.expected_value,
+            horizon_days=payload.decision_certificate.projection.horizon_days,
+            confidence=payload.decision_certificate.projection.confidence,
+        ),
+        issued_at=payload.decision_certificate.issued_at,
+    )
+    out = OutcomeEventLike(
+        id=payload.outcome_event.id,
+        metric=payload.outcome_event.metric,
+        observed_value=payload.outcome_event.observed_value,
+        observed_at=payload.outcome_event.observed_at,
+        source=payload.outcome_event.source,
+        expected_value=payload.outcome_event.expected_value,
+    )
+    try:
+        result = compute_variance(
+            dec, out,
+            metric_kind_override=payload.metric_kind_override,
+            neutral_band_pct=payload.neutral_band_pct,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {
+        "decision_certificate_id": result.decision_certificate_id,
+        "outcome_event_id": result.outcome_event_id,
+        "expected_value": result.expected_value,
+        "observed_value": result.observed_value,
+        "raw_diff": result.raw_diff,
+        "variance": result.variance,
+        "variance_pct": result.variance_pct,
+        "direction": result.direction,
+        "metric_kind": result.metric_kind,
+        "computation_version": result.computation_version,
+        "computed_at": result.computed_at,
+        "notes": result.notes,
+    }
+
+
+@router.post("/v1/calibration/attribute")
+def calibration_attribute(payload: AttributeRequest):
+    """Run three-stage attribution; optionally persist resulting links."""
+    from engine.ovs_calibration import (
+        DecisionCertificateLike, DecisionProjection, OutcomeEventLike,
+        attribute, persist_link,
+    )
+    dec = DecisionCertificateLike(
+        decision_certificate_id=payload.decision_certificate.decision_certificate_id,
+        decision_class=payload.decision_certificate.decision_class,
+        projection=DecisionProjection(
+            metric=payload.decision_certificate.projection.metric,
+            expected_value=payload.decision_certificate.projection.expected_value,
+            horizon_days=payload.decision_certificate.projection.horizon_days,
+            confidence=payload.decision_certificate.projection.confidence,
+        ),
+        issued_at=payload.decision_certificate.issued_at,
+    )
+    out = OutcomeEventLike(
+        id=payload.outcome_event.id,
+        metric=payload.outcome_event.metric,
+        observed_value=payload.outcome_event.observed_value,
+        observed_at=payload.outcome_event.observed_at,
+        source=payload.outcome_event.source,
+        expected_value=payload.outcome_event.expected_value,
+    )
+    links = attribute(
+        dec, out,
+        decision_entity=payload.decision_entity,
+        horizon_days=payload.horizon_days,
+    )
+    persisted: list[dict] = []
+    if payload.persist:
+        for link in links:
+            persisted.append(persist_link(link))
+    return {
+        "links": [
+            {
+                "id": link.id,
+                "decision_certificate_id": link.decision_certificate_id,
+                "outcome_event_id": link.outcome_event_id,
+                "confidence": link.confidence,
+                "attribution_method": link.attribution_method,
+                "layer_number": link.layer_number,
+                "cascade_multiplier": link.cascade_multiplier,
+                "reasoning": link.reasoning,
+            }
+            for link in links
+        ],
+        "persisted": persisted,
+        "count": len(links),
+    }
+
+
+@router.get("/v1/calibration/revisions")
+def calibration_revisions_list(
+    dimension: Optional[str] = None,
+    limit: int = 200,
+):
+    """List calibration revisions."""
+    from engine.ovs_calibration import list_revisions
+    limit = max(1, min(limit, 1000))
+    items = list_revisions(dimension=dimension, limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/v1/calibration/revisions", status_code=201)
+def calibration_revisions_create(payload: CalibrationRevisionCreateRequest):
+    """Sign + persist a calibration revision; runs authority gate first."""
+    from engine.ovs_calibration import (
+        CalibrationRevision, check_calibration_authority, write_revision,
+    )
+    # Authority gate
+    signoff = check_calibration_authority(
+        dimension=payload.dimension,
+        before_value=payload.before_value,
+        after_value=payload.after_value,
+        computation_version=payload.computation_version,
+        previous_computation_version=payload.previous_computation_version,
+        is_new_dimension=payload.is_new_dimension,
+        is_removal=payload.is_removal,
+        signers=[payload.signed_by, *payload.additional_signers],
+    )
+    if signoff is not None and not payload.bypass_authority:
+        raise HTTPException(status_code=409, detail=signoff.to_dict())
+
+    try:
+        rev = CalibrationRevision(
+            dimension=payload.dimension,
+            before_value=payload.before_value,
+            after_value=payload.after_value,
+            evidence_window_start=payload.evidence_window_start,
+            evidence_window_end=payload.evidence_window_end,
+            evidence_outcome_ids=payload.evidence_outcome_ids,
+            computation_version=payload.computation_version,
+            signed_by=payload.signed_by,
+            reasoning=payload.reasoning,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return write_revision(rev)
 
 
 @router.post("/v1/codification/analyze")
