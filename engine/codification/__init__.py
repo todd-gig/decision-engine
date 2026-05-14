@@ -56,10 +56,26 @@ from .signoff import (
     required_signers,
 )
 from .sweep import (
+    PROPOSER_ENABLED_ENV,
     SWEEP_PROMPT_VERSION,
     SWEEP_SCHEMA_VERSION,
     SweepReport,
     run_sweep,
+)
+from .proposer import (
+    BannedImportError,
+    ModuleProposal,
+    PROPOSER_PROMPT_VERSION,
+    PROPOSER_SCHEMA_VERSION,
+    get_module_proposal,
+    list_module_proposals_for_candidate,
+    propose_python_module,
+)
+from .simulator import (
+    CODIFIED_ENTRY_POINT,
+    DOCTRINE_DIVERGENCE_CEILING,
+    SimulatorCompileError,
+    simulate_against_history,
 )
 
 __all__ = [
@@ -101,6 +117,20 @@ __all__ = [
     "run_sweep",
     # v0.5 approval flow
     "approve_and_certify",
+    # v0.6 proposer
+    "BannedImportError",
+    "ModuleProposal",
+    "PROPOSER_PROMPT_VERSION",
+    "PROPOSER_SCHEMA_VERSION",
+    "PROPOSER_ENABLED_ENV",
+    "propose_python_module",
+    "get_module_proposal",
+    "list_module_proposals_for_candidate",
+    # v0.6 simulator
+    "CODIFIED_ENTRY_POINT",
+    "DOCTRINE_DIVERGENCE_CEILING",
+    "SimulatorCompileError",
+    "simulate_against_history",
 ]
 
 
