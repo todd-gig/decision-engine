@@ -1,4 +1,4 @@
-"""Drift Sentinel preventive rules — CRIT-011 + MIN-009.
+"""Drift Sentinel preventive rules — CRIT-011 + MIN-009 + MIN-010.
 
 CRIT-011 (env_mutation_in_request_handler):
     Detects `os.environ[X] = ...` (and .update / .__setitem__) inside
@@ -12,6 +12,14 @@ MIN-009 (cloud_run_max_instances_above_one):
     WHY: several v0 designs assume single-instance correctness
     (SecretStore cache, in-memory rate limits, scheduler leader-elect).
     See `design_decision_secret_store_cache_2026_05_14.md`.
+
+MIN-010 (catalog_table_missing_tags_jsonb):
+    Detects CREATE TABLE / op.create_table for catalog-shaped tables
+    (suffix _catalog/_registry/_taxonomy/_dictionary/_dimensions/_map)
+    that omit `tags JSONB`. WHY: Modular Replication via Input
+    Substitution requires every catalog datum to carry multi-axis tags
+    so engines filter by operator_context. See
+    `docs/doctrine/foundational_modular_replication_via_input_substitution.md`.
 """
 from __future__ import annotations
 
@@ -23,6 +31,7 @@ sys.path.insert(0, str(_HERE.parent / "drift_sentinel"))
 
 from drift_scan import (  # noqa: E402
     Artifact,
+    _check_catalog_table_missing_tags_jsonb,
     _check_cloud_run_max_instances_above_one,
     _check_env_mutation_in_request_handler,
 )
@@ -45,6 +54,25 @@ _MIN_009_RULE = {
         "initiate cross-instance work."
     ),
 }
+
+_MIN_010_RULE = {
+    "id": "MIN-010",
+    "severity": "minor",
+    "remediation": (
+        "Add a `tags JSONB NOT NULL DEFAULT '{}'::jsonb` column plus a "
+        "GIN index. See migration 038 in sovereign-influence-engine."
+    ),
+}
+
+
+def _sql(content: str, *, identifier: str = "infra/migrations/099_test.sql") -> Artifact:
+    return Artifact(
+        source="codebase",
+        identifier=identifier,
+        artifact_type="code",
+        content=content,
+        metadata={"ext": ".sql"},
+    )
 
 
 def _py(content: str, *, identifier: str = "services/x/main.py") -> Artifact:
@@ -356,3 +384,141 @@ DEPLOY_ARGS = ["--max-instances=8", "--region=us-central1"]
     )
     violations = _check_cloud_run_max_instances_above_one(art, _MIN_009_RULE)
     assert len(violations) == 1
+
+
+# ---------------------------------------------------------------------------
+# MIN-010 — catalog-shaped table without tags JSONB
+# ---------------------------------------------------------------------------
+
+
+def test_min010_fires_on_sql_create_catalog_table_without_tags():
+    sql = """
+CREATE TABLE connectors_catalog (
+    connector_id VARCHAR(64) PRIMARY KEY,
+    category TEXT NOT NULL,
+    name TEXT NOT NULL
+);
+"""
+    violations = _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE)
+    assert len(violations) == 1
+    assert "connectors_catalog" in violations[0].excerpt
+
+
+def test_min010_does_not_fire_when_tags_jsonb_present():
+    sql = """
+CREATE TABLE connectors_catalog (
+    connector_id VARCHAR(64) PRIMARY KEY,
+    category TEXT NOT NULL,
+    tags JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+"""
+    assert _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE) == []
+
+
+def test_min010_fires_on_each_catalog_suffix():
+    """Suffixes _catalog / _registry / _taxonomy / _dictionary /
+    _dimensions / _map all trip."""
+    for suffix in ("catalog", "registry", "taxonomy", "dictionary",
+                   "dimensions", "map"):
+        sql = f"CREATE TABLE foo_{suffix} (id INT, category TEXT);"
+        viols = _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE)
+        assert len(viols) == 1, f"suffix _{suffix} should trip"
+        assert f"foo_{suffix}" in viols[0].excerpt
+
+
+def test_min010_does_not_fire_on_non_catalog_table():
+    sql = """
+CREATE TABLE users (
+    id INT PRIMARY KEY,
+    category TEXT
+);
+"""
+    assert _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE) == []
+
+
+def test_min010_passes_when_same_file_has_alter_add_tags():
+    """A CREATE TABLE without tags + an ALTER TABLE adding tags in the
+    same migration file is considered remediated."""
+    sql = """
+CREATE TABLE foo_catalog (
+    id INT,
+    category TEXT
+);
+ALTER TABLE foo_catalog ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '{}'::jsonb;
+"""
+    assert _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE) == []
+
+
+def test_min010_honors_noqa_override():
+    sql = """
+-- noqa: MIN-010 — legacy table, tags will be added in migration 099
+CREATE TABLE legacy_catalog (
+    id INT,
+    category TEXT
+);
+"""
+    assert _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE) == []
+
+
+def test_min010_honors_inline_na_comment():
+    sql = """
+-- drift-sentinel: MIN-010 N/A because this is an internal-only lookup
+CREATE TABLE lookup_dictionary (
+    code TEXT PRIMARY KEY,
+    label TEXT
+);
+"""
+    assert _check_catalog_table_missing_tags_jsonb(_sql(sql), _MIN_010_RULE) == []
+
+
+def test_min010_fires_on_alembic_op_create_table():
+    py = """
+def upgrade() -> None:
+    op.create_table(
+        'connectors_catalog',
+        sa.Column('connector_id', sa.String(64), primary_key=True),
+        sa.Column('category', sa.String(64), nullable=False),
+        sa.Column('name', sa.String(255), nullable=False),
+    )
+"""
+    art = Artifact(
+        source="codebase",
+        identifier="alembic/versions/abc_create.py",
+        artifact_type="code",
+        content=py,
+        metadata={"ext": ".py"},
+    )
+    violations = _check_catalog_table_missing_tags_jsonb(art, _MIN_010_RULE)
+    assert len(violations) == 1
+    assert "connectors_catalog" in violations[0].excerpt
+
+
+def test_min010_does_not_fire_on_alembic_with_tags_column():
+    py = """
+def upgrade() -> None:
+    op.create_table(
+        'connectors_catalog',
+        sa.Column('connector_id', sa.String(64), primary_key=True),
+        sa.Column('tags', postgresql.JSONB, nullable=False, server_default='{}'),
+    )
+"""
+    art = Artifact(
+        source="codebase",
+        identifier="alembic/versions/xyz.py",
+        artifact_type="code",
+        content=py,
+        metadata={"ext": ".py"},
+    )
+    assert _check_catalog_table_missing_tags_jsonb(art, _MIN_010_RULE) == []
+
+
+def test_min010_does_not_fire_on_non_sql_python_artifact():
+    """Only .sql and .py artifacts are scanned."""
+    art = Artifact(
+        source="codebase",
+        identifier="README.md",
+        artifact_type="markdown",
+        content="CREATE TABLE foo_catalog (id INT);",
+        metadata={"ext": ".md"},
+    )
+    assert _check_catalog_table_missing_tags_jsonb(art, _MIN_010_RULE) == []

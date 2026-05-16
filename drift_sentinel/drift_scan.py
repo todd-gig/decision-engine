@@ -2664,6 +2664,132 @@ def _check_interaction_without_cost(
     return violations
 
 
+# MIN-010 — catalog-shaped table created without tags JSONB column.
+_CATALOG_TABLE_SUFFIXES = (
+    "catalog", "registry", "taxonomy", "dictionary", "dimensions", "map"
+)
+_CATALOG_CREATE_TABLE_RE = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(\w+_(?:" + "|".join(_CATALOG_TABLE_SUFFIXES) + r"))\s*\(",
+    re.IGNORECASE,
+)
+_CATALOG_ALEMBIC_CREATE_RE = re.compile(
+    r"""op\.create_table\(\s*['"](\w+_(?:"""
+    + "|".join(_CATALOG_TABLE_SUFFIXES)
+    + r"""))['"]""",
+    re.IGNORECASE,
+)
+_TAGS_JSONB_RE = re.compile(r"\btags\s+JSONB\b", re.IGNORECASE)
+_TAGS_ALEMBIC_RE = re.compile(
+    r"""Column\(\s*['"]tags['"]\s*,\s*(?:postgresql\.)?JSONB""",
+    re.IGNORECASE,
+)
+
+
+def _catalog_table_body(content: str, open_paren_idx: int) -> str:
+    """Return text from open paren through matching close paren (simple)."""
+    depth = 0
+    end = len(content)
+    for i in range(open_paren_idx, len(content)):
+        ch = content[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    return content[open_paren_idx:end]
+
+
+def _check_catalog_table_missing_tags_jsonb(
+    art: Artifact, rule: dict
+) -> list[Violation]:
+    """MIN-010: catalog-shaped table created without tags JSONB column.
+
+    Per foundational_modular_replication_via_input_substitution.md, any
+    catalog table (name ending in _catalog/_registry/_taxonomy/_dictionary
+    /_dimensions/_map) must include `tags JSONB` so it can participate in
+    multi-axis filtering by operator_context.
+
+    Fires on CREATE TABLE (SQL) or op.create_table (Alembic) for catalog-
+    named tables that have no tags JSONB column declared in the same
+    body. A follow-up ALTER TABLE ... ADD COLUMN tags JSONB in the same
+    migration file also passes.
+    """
+    if art.artifact_type not in {"code", "config"}:
+        return []
+    ext = art.metadata.get("ext")
+    if ext not in {".py", ".sql"}:
+        return []
+    if "noqa: MIN-010" in art.content or "MIN-010 N/A" in art.content:
+        return []
+
+    violations: list[Violation] = []
+    seen_lines: set[int] = set()
+
+    # File-level escape: ALTER TABLE adding tags JSONB elsewhere in same file
+    file_has_tags_alter = bool(re.search(
+        r"ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        r"tags\s+JSONB",
+        art.content,
+        re.IGNORECASE,
+    ))
+
+    # SQL CREATE TABLE pattern
+    for match in _CATALOG_CREATE_TABLE_RE.finditer(art.content):
+        table_name = match.group(1)
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        body = _catalog_table_body(art.content, match.end() - 1)
+        if _TAGS_JSONB_RE.search(body):
+            continue
+        if file_has_tags_alter:
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"CREATE TABLE {table_name} missing `tags JSONB` column "
+                f"(MIN-010 — Modular Replication doctrine requires multi-"
+                f"axis tags on every catalog-shaped table)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    # Alembic op.create_table pattern
+    for match in _CATALOG_ALEMBIC_CREATE_RE.finditer(art.content):
+        table_name = match.group(1)
+        line_no = art.content[: match.start()].count("\n") + 1
+        if line_no in seen_lines:
+            continue
+        # Look at the next ~80 lines for the closing of the create_table call
+        lines = art.content.split("\n")
+        window = "\n".join(lines[line_no - 1 : min(len(lines), line_no + 80)])
+        if _TAGS_ALEMBIC_RE.search(window):
+            continue
+        if file_has_tags_alter:
+            continue
+        seen_lines.add(line_no)
+        violations.append(Violation(
+            rule_id=rule["id"],
+            severity=rule["severity"],
+            artifact=art.identifier,
+            location=f"{art.identifier}:{line_no}",
+            excerpt=(
+                f"op.create_table('{table_name}', ...) missing tags JSONB "
+                f"Column (MIN-010 — Modular Replication doctrine)"
+            ),
+            suggested_fix=rule.get("remediation", ""),
+        ))
+
+    return violations
+
+
 def _path_matches_exclude(
     identifier: str, excludes: list[str] | None
 ) -> bool:
@@ -2715,6 +2841,7 @@ STRUCTURAL_HANDLERS: dict[str, CheckFn] = {
     "MAJ-010": _check_value_chain_break,
     "MIN-001": _check_typescript_any,
     "MIN-009": _check_cloud_run_max_instances_above_one,
+    "MIN-010": _check_catalog_table_missing_tags_jsonb,
     # Framework 5.19 BFT — wired 2026-05-14, active per T+72 commitment
     # (effective_date 2026-05-13 + 72hr = ~2026-05-16). See
     # framework_5_19_bft_amendment.md and the BFT handler block above.
