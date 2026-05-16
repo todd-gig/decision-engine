@@ -6,6 +6,9 @@ the row wasn't tampered with after the fact.
 
 The HMAC key is read from env `LLM_AUDIT_HMAC_KEY`. For local dev a
 deterministic default is used; production must set the env explicitly.
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
 """
 from __future__ import annotations
 

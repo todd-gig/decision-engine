@@ -2,6 +2,9 @@
 
 Not wired yet. Raises NotImplementedError so fallback-chain logic in
 router.py can distinguish "provider missing" from "provider failed".
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
 """
 from __future__ import annotations
 
