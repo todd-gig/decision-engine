@@ -81,7 +81,7 @@ Four axioms govern the system.
 
 ### Out of scope (archival)
 
-`carmenbeachproperties` (old), `desktop-tutorial`, `CxGuy-Slack-Discussions` (read-only archive), `intelligence-silo-backup` (vault).
+`playadelcarmen.homes` (old), `desktop-tutorial`, `CxGuy-Slack-Discussions` (read-only archive), `intelligence-silo-backup` (vault).
 
 ### Entities
 
