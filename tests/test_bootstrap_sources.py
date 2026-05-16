@@ -5,7 +5,7 @@ Coverage:
   - bootstrap_all is idempotent (running twice doesn't duplicate)
   - bootstrap_one with --source carmen-beach-revenue registers just that
   - dry-run produces no DB writes
-  - schema validates booking_id required (Carmen Beach spec)
+  - schema validates booking_id required (PDC spec)
   - startup-gate honors PENROSE_BOOTSTRAP_SOURCES=0 (no auto-register)
 
 penrose_signal: weakens

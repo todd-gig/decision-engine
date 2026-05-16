@@ -3,7 +3,7 @@
 **Purpose:** Single source of truth that the Drift Sentinel cross-references against. Every codebase, repo, doc, ClickUp item, and Drive asset is scored against this document. Drift = deviation from what is here.
 
 **Built from convergent extraction across:**
-- 4 code stacks (Carmen Beach Properties, Gigaton + Gigaton-Engine + Gigaton-UI, Decision Engine + Intelligence Silo + Claude Decision Logic Pack, Sales Operating System)
+- 4 code stacks (PDC, Gigaton + Gigaton-Engine + Gigaton-UI, Decision Engine + Intelligence Silo + Claude Decision Logic Pack, Sales Operating System)
 - MD Files knowledge bundles (claude-automation v3.2, decision-logic-and-rtql, intelligence-engine, sales-operating-system-agentic)
 - Master Knowledge Base, Braintrust KB, Transcript KB
 - Downloads philosophy artifacts (Sovereign Influence Engine, Gigaton Custom Language Repo v3, SIE First Production Bundle v1)
@@ -178,7 +178,7 @@ Geometric/causal memory architecture as shared substrate; equal 25% Founder shar
 - Experience Layer → persona/org digital twins + CxGuy Trust×Value×Priority graph + Network Intelligence Layer in `decision-engine`
 - Symbiotic Cognition Layer → `decision-engine` + `cxguy-methodology` + `human-management-engine` + Network Intelligence product-dev pipeline
 
-**Network participants (eventual goal):** Humans + their personal agents + TI experts + Gigaton platform + network entities (Carmen Beach, Ti Solutions, LiquiFex, InContekst). All four engines (`user-access-engine`, `human-management-engine`, `decision-engine`, `intelligence-silo`) plus Gignet Local Node are sub-components of the SMEN implementation.
+**Network participants (eventual goal):** Humans + their personal agents + TI experts + Gigaton platform + network entities (PDC, Ti Solutions, LiquiFex, InContekst). All four engines (`user-access-engine`, `human-management-engine`, `decision-engine`, `intelligence-silo`) plus Gignet Local Node are sub-components of the SMEN implementation.
 
 **Why this is binding doctrine:** Anchors every architectural decision to a measurable network outcome. Without SMEN as canonical doctrine, engine specs drift toward platform-owns-data assumptions that contradict User Sovereignty. Promoted to canonical 2026-05-08 by Todd; previously formalized 2025-12-02 (v1.0 2026-01-08) but not yet binding.
 
@@ -213,7 +213,7 @@ The 9 variables are the binding set. Substitution, addition, or removal of varia
 
 **Engine implementation map:**
 - State Model → `user-access-engine` (canonical persona + org persona) + `intelligence-silo` (memory partitions) + PPEME `state_estimator`
-- Interaction Model → `gignet-local-node` (behavioral capture) + Carmen Beach engagement surfaces + gamification event stream consumed by `human-management-engine` + PPEME `interaction_catalog`
+- Interaction Model → `gignet-local-node` (behavioral capture) + PDC engagement surfaces + gamification event stream consumed by `human-management-engine` + PPEME `interaction_catalog`
 - Transformation Engine → `decision-engine` (decision certificates with QC→VC→TC→EC chain) + `cxguy-methodology` (Trust × Value × Priority ranker)
 - Simulation Layer → **`ppeme` Master Calculator** (Cloud Run service in `gigaton-platform`, `/v1/scenarios/simulate` + `/v1/forecasts`)
 
@@ -373,7 +373,7 @@ For each source, it asks:
 | Attractor Dynamix | `MD Files/chatgpt-gigaton/gigaton-and-liquifex/ChatGPT MD -Attractor Dynamix Constitution.md` |
 | Gigaton Value Matrix | `MD Files/chatgpt-gigaton/gigaton-and-liquifex/ChatGPT MD -Gigaton Value Matrix.md` |
 | Symbiotic Memory-Experience Network (SMEN) | `MD Files/chatgpt-gigaton/research-and-concepts/ChatGPT MD -Symbiotic Memory-Experience Network origin.md` |
-| Carmen Beach platform | `Carmen-Beach-Properties/` |
+| PDC platform | `Carmen-Beach-Properties/` |
 
 If any of these files **contradict** this canonical doc, the canonical doc wins until the contradiction is resolved by explicit governance review (§19 of the Master Reference).
 

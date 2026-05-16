@@ -97,7 +97,7 @@ def _reset_variance_cache():
 
 def test_register_source_round_trips(tmp_db):
     src = OutcomeSource(
-        name="Carmen Beach Revenue",
+        name="PDC Revenue",
         kind="revenue",
         entity="carmen-beach",
         ingestion_contract="webhook",

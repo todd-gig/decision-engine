@@ -1,7 +1,7 @@
 """backfill_carmen_beach_revenue — one-time CSV-driven revenue backfill.
 
 WHAT: Operator-run script that reads a Google Sheets CSV export of
-Carmen Beach STVR bookings and publishes one OutcomeEvent per row into
+PDC STVR bookings and publishes one OutcomeEvent per row into
 OVS-Calibration. Used once-per-historical-window to seed the system so
 the Penrose `revenue_per_human_touch` metric becomes real for past
 periods.
@@ -25,7 +25,7 @@ never double-counts.
 HOW:
   1. Read CSV, expecting columns: booking_id, unit_id, check_in,
      check_out, gross_usd, (optional: net_usd, channel).
-  2. Validate each row against the Carmen Beach revenue schema.
+  2. Validate each row against the PDC revenue schema.
   3. For each valid row:
        --direct: call `ingest_outcome(...)` with source_record_id=booking_id
        (default): publish to Pub/Sub topic (lazy import; no-op if google-cloud-pubsub
@@ -202,7 +202,7 @@ def _validate_row(row: dict) -> dict:
 
 
 def _row_to_adapter_message(normalized: dict) -> AdapterMessage:
-    """Build the AdapterMessage the Carmen Beach adapter expects.
+    """Build the AdapterMessage the PDC adapter expects.
 
     WHY use the adapter's transform: keeps a single source of truth for
     how a raw STVR record becomes an outcome event (metric naming,
@@ -429,7 +429,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backfill_carmen_beach_revenue",
         description=(
-            "One-time CSV-driven backfill for Carmen Beach STVR revenue into "
+            "One-time CSV-driven backfill for PDC STVR revenue into "
             "OVS-Calibration. Operator-driven; never fabricates rows."
         ),
     )

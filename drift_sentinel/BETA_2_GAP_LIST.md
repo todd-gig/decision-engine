@@ -2,7 +2,7 @@
 
 **Generated:** 2026-05-06
 **Last updated:** 2026-05-06 EOD — resolution work in progress
-**Source basis:** Drift Sentinel scan + Active Work Registry refresh + 3 parallel deep-audit passes (Carmen Beach + Sales OS / Decision-Engine + Intel Silo + Gigaton-Engine / Doctrine + Drift-Rules + Repo Hygiene) + CAPABILITY_AUDIT.md (Carmen Beach, 2026-05-05) + SIE + cxguy-methodology repo readmes
+**Source basis:** Drift Sentinel scan + Active Work Registry refresh + 3 parallel deep-audit passes (PDC + Sales OS / Decision-Engine + Intel Silo + Gigaton-Engine / Doctrine + Drift-Rules + Repo Hygiene) + CAPABILITY_AUDIT.md (PDC, 2026-05-05) + SIE + cxguy-methodology repo readmes
 **Bar:** Per Gigent Value Matrix Doctrine, beta 2.0 must clear `functionality > capabilities > human super abilities enabled` in one release window. A beta that ships only functionality is mis-named.
 
 ---
@@ -73,7 +73,7 @@
 
 | # | Item | Why blocked |
 |---|---|---|
-| ⚠️ B-06 | Carmen Beach branch merge | Destructive-ish git operation (merge `add-chatgpt-snippets-carmen` → main, with 2 commits divergence). Want explicit go-ahead since main has work this branch doesn't have |
+| ⚠️ B-06 | PDC branch merge | Destructive-ish git operation (merge `add-chatgpt-snippets-carmen` → main, with 2 commits divergence). Want explicit go-ahead since main has work this branch doesn't have |
 | ⚠️ B-12 | GH_TOKEN secret in GCP for drift-sentinel | Need actual GitHub PAT with `repo` + `read:org` scopes to create the secret |
 | ⚠️ B-09 | Stripe wiring | Needs Stripe Connect creds + decision on direct vs marketplace charges |
 | ⚠️ B-08 | Drive sync | Needs Google service-account creds for `packages/google-drive` |
@@ -102,7 +102,7 @@
 | B-04 | **intelligence-silo weights import not implemented** — CLAUDE.md claims silo imports value/penalty weights from `decision-engine/config/engine.yaml`, but `core/bridge/connector.py` doesn't load anything | `intelligence-silo/core/bridge/connector.py` | Implement `load_decision_weights()`, inject into SLM router scoring |
 | B-05 | **decision-engine ↔ gigaton-engine: zero connection** — pricing decisions made in gigaton-engine never reach decision-engine for governance/audit | new module `decision-engine/integration/gigaton_client.py` | HTTP bridge mirroring `sales-operating-system/app/services/gigaton_pricing.py` pattern |
 
-### Carmen Beach (4)
+### PDC (4)
 
 | # | Gap | File / location | Fix shape |
 |---|---|---|---|
@@ -135,12 +135,12 @@
 
 | # | Gap | Evidence |
 |---|---|---|
-| M-01 | **Carmen Beach: 0 tests** — turbo pipeline declares `test` task but no `*.test.ts` files | turbo.json:13 |
+| M-01 | **PDC: 0 tests** — turbo pipeline declares `test` task but no `*.test.ts` files | turbo.json:13 |
 | M-02 | **gigaton-engine: 0 tests** — DAG model logic and pricing rules untested; margin-floor enforcement not validated | `tests/` absent |
 | M-03 | **decision-engine: 1 thin test file** — `test_pipeline.py` 8 cases; covers happy path only, not the 7-gate edge cases | `tests/test_pipeline.py` |
 | M-04 | **intelligence-silo: 3 test files but no pytest config** — tests exist but not in CI; no integration test with decision-engine | `intelligence-silo/tests/` |
 
-### Carmen Beach capability gaps (per CAPABILITY_AUDIT.md) (3)
+### PDC capability gaps (per CAPABILITY_AUDIT.md) (3)
 
 | # | Gap | Status in audit | Notes |
 |---|---|---|---|
@@ -152,8 +152,8 @@
 
 | # | Gap | Evidence |
 |---|---|---|
-| M-08 | **No observability across any stack** — `packages/observability` empty in Carmen Beach; sales-OS has no Sentry; gigaton-engine has no instrumentation; cloud logs only | per-repo |
-| M-09 | **No audit log surface** — schema fields exist on Carmen Beach (`audit_logs` planned); no UI; no query endpoint | `audit_logs` planned in Phase 3 |
+| M-08 | **No observability across any stack** — `packages/observability` empty in PDC; sales-OS has no Sentry; gigaton-engine has no instrumentation; cloud logs only | per-repo |
+| M-09 | **No audit log surface** — schema fields exist on PDC (`audit_logs` planned); no UI; no query endpoint | `audit_logs` planned in Phase 3 |
 | M-10 | **No error reporting** — Sentry/Datadog absent everywhere; runtime errors silently disappear into Cloud Logging | every repo |
 
 ### Verified-but-unintegrated (2)
@@ -184,7 +184,7 @@
 
 | Stack | 🔴 | 🟠 | 🟡 | Total | Beta-blocking summary |
 |---|---|---|---|---|---|
-| Carmen Beach | 4 | 3 | 1 | 8 | branch merge + email adapter + Drive sync + Stripe |
+| PDC | 4 | 3 | 1 | 8 | branch merge + email adapter + Drive sync + Stripe |
 | Decision Engine + Drift Sentinel | 3 | 1 | 1 | 5 | 23 dormant rules + drift→gates feedback loop + Drive/ClickUp adapters |
 | Gigaton Engine | 1 | 1 | 1 | 3 | startup wiring + DAG coefficient sync + tests |
 | Intelligence Silo | 1 | 1 | 0 | 2 | weights bridge + integration test |
@@ -202,7 +202,7 @@
 
 ```
 B-06 (Carmen merge to main)  ─┐
-B-07 (email adapter)          ├──► Carmen Beach Phase 2 deployable
+B-07 (email adapter)          ├──► PDC Phase 2 deployable
 B-08 (Drive sync)             │
 B-09 (Stripe)                 ┘
 
@@ -224,7 +224,7 @@ M-12 (cxguy wire-up)    ─► CxGuy methodology runs as Stage 3 of SIE pipeline
 
 **Critical path to Beta 2.0:**
 1. Wire fixes B-01, B-02, B-04, B-05 (closes the engine triangle)
-2. Carmen Beach B-06, B-07, B-08 (closes the vertical slice)
+2. PDC B-06, B-07, B-08 (closes the vertical slice)
 3. Drift Sentinel B-10 priority 10 handlers + B-12 GH token
 4. Doctrine B-13, B-14 (every CLAUDE.md references canonical)
 5. Test coverage M-01 through M-04 (CI gates)
@@ -240,7 +240,7 @@ M-12 (cxguy wire-up)    ─► CxGuy methodology runs as Stage 3 of SIE pipeline
 - ClickUp task hygiene — drift sentinel ClickUp adapter still a stub
 - Cross-entity work (LiquiFex Platform UI state, InContekst engagement)
 - Subjective design quality / UX polish
-- Anything pre-`add-chatgpt-snippets-carmen` branch in Carmen Beach (assumes that work is correct as-is)
+- Anything pre-`add-chatgpt-snippets-carmen` branch in PDC (assumes that work is correct as-is)
 - Whether Beta 2.0 even targets all 15 blockers or accepts some as Beta 2.1 — *operator decision*
 
 ---

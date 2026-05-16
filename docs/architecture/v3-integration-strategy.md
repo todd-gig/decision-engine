@@ -66,7 +66,7 @@ Four axioms govern the system.
 - `braintrust-knowledge-base` (14 session notes — strategic context)
 
 **Tier 5 — Revenue-facing deliverables:**
-- Carmen Beach Properties site + admin (already production-grade)
+- PDC site + admin (already production-grade)
 - LiquiFex intake flow + presentation
 - Interactive Claude Education ROI calculator
 

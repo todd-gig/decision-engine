@@ -69,7 +69,7 @@ The doctrine is not speculative — code and specs already lean on it:
 - `ppeme/docs/{business_field_theory.md, equations.md, data_mapping.md}` — empirical specification, 9-variable state vector, conversion / revenue / LTV equations
 - `claude_business_field_theory_package/code/business_field_theory_simulation.py` — 235-line working Python implementation (deterministic + Monte Carlo simulation)
 - `predictably_profitable_experience_management_engine.md` — PPEME engine spec; Master Calculator = the Simulation Layer of BFT
-- `bft_package_integration_plan.md` — 4-phase integration into PPEME against Carmen Beach as first vertical consumer
+- `bft_package_integration_plan.md` — 4-phase integration into PPEME against PDC as first vertical consumer
 - `mtheory_business_field_theory.md` — already self-identifies as "candidate for canonical Framework 5.19"
 
 Without canonization, these artifacts sit outside the drift-sentinel's authority surface. Drift away from the 9-variable state vector (or substitution of alternative state models without governance review) becomes silently possible. The amendment closes that.
@@ -77,7 +77,7 @@ Without canonization, these artifacts sit outside the drift-sentinel's authority
 ### Why now (not earlier, not later)
 
 - **Not earlier**: §5.19 was held back until a working implementation existed (the BFT package, ingested 2026-05-12) and an empirical operational spec (PPEME docs, present in repo). Promoting concept without code would have been theater.
-- **Not later**: PPEME repo is being scaffolded into `gigaton-platform` in the upcoming deploy windows. Once Master Calculator forecasts attach to live Decision Certificates and Carmen Beach Phase 2 lead-scoring wires the thin client (per `bft_package_integration_plan.md` Phase 1), the doctrine is being exercised at runtime — it must be in canon by then or it is drift-by-construction.
+- **Not later**: PPEME repo is being scaffolded into `gigaton-platform` in the upcoming deploy windows. Once Master Calculator forecasts attach to live Decision Certificates and PDC Phase 2 lead-scoring wires the thin client (per `bft_package_integration_plan.md` Phase 1), the doctrine is being exercised at runtime — it must be in canon by then or it is drift-by-construction.
 
 ### Sign-off rationale (founder + owner + admin all three)
 
@@ -104,7 +104,7 @@ This matches the precedent set by Framework 5.18 (SMEN), which was canonized 202
 ### Specs depending on canonization
 
 - PPEME repo (forthcoming): Master Calculator subsystem refers to "Framework 5.19" once effective
-- Carmen Beach Phase 2 lead-scoring module: thin client to PPEME `/v1/forecasts/leads` will cite §5.19 in its decision-certificate `framework_refs[]`
+- PDC Phase 2 lead-scoring module: thin client to PPEME `/v1/forecasts/leads` will cite §5.19 in its decision-certificate `framework_refs[]`
 - Decision Engine forecast hooks (future): every Decision Certificate that attaches a Master Calculator forecast carries `framework_refs: [5.19]`
 - Drift-sentinel: gains a new rule class (see "Anti-patterns it rules out" below) keyed on §5.19 compliance
 
@@ -155,7 +155,7 @@ The 9 variables are the binding set. Substitution, addition, or removal of varia
 
 **Engine implementation map:**
 - State Model → `user-access-engine` (canonical persona + org persona) + `intelligence-silo` (memory partitions) + PPEME `state_estimator`
-- Interaction Model → `gignet-local-node` (behavioral capture) + Carmen Beach engagement surfaces + gamification event stream consumed by `human-management-engine` + PPEME `interaction_catalog`
+- Interaction Model → `gignet-local-node` (behavioral capture) + PDC engagement surfaces + gamification event stream consumed by `human-management-engine` + PPEME `interaction_catalog`
 - Transformation Engine → `decision-engine` (decision certificates with QC→VC→TC→EC chain) + `cxguy-methodology` (Trust × Value × Priority ranker)
 - Simulation Layer → **`ppeme` Master Calculator** (Cloud Run service in `gigaton-platform`, `/v1/scenarios/simulate` + `/v1/forecasts`)
 
@@ -227,7 +227,7 @@ Two existing lines mention "18 frameworks" and must be updated to "19 frameworks
 ### Consumers
 
 - **PPEME Master Calculator** (primary; v0 ships into `gigaton-platform` in upcoming deploy window per `bft_package_integration_plan.md`)
-- **Carmen Beach Phase 2 lead-scoring** (first vertical consumer; thin client to `/v1/forecasts/leads`)
+- **PDC Phase 2 lead-scoring** (first vertical consumer; thin client to `/v1/forecasts/leads`)
 - **Decision Engine forecast hooks** (future; every D2+ decision certificate carries forecast extension)
 - **gigaton-ui-system dashboards** (4 operator views per `dashboard_architecture.md`: State / Heatmap / Simulator / Recommendation)
 - **Human Management Engine** (consumes interaction-effect signal for coaching analytics)
@@ -242,7 +242,7 @@ Two existing lines mention "18 frameworks" and must be updated to "19 frameworks
 
 3. **Mandating forecasts on D2 decisions adds operator burden** — every D2 decision now nominally requires a state estimate + forecast attachment. **Mitigation:** state estimator runs server-side from real signal; the operator only authors the decision and the WHY; forecast attachment is automated post-decision. Burden is on the engine, not the human.
 
-4. **Cross-vertical applicability assumed but unproven** — Carmen Beach is rich behavioral-data. LiquiFex (life-settlement) and InContekst (marketing analytics) have different signal shapes. The 9-variable state may not project cleanly onto those domains. **Mitigation:** Phase 4 of integration plan explicitly produces sector-specific calibration (real estate vs life-settlement vs MMM vs BPO) — same framework, different weights per vertical. The framework survives sector specialization; only if it cannot survive does this concern materialize.
+4. **Cross-vertical applicability assumed but unproven** — PDC is rich behavioral-data. LiquiFex (life-settlement) and InContekst (marketing analytics) have different signal shapes. The 9-variable state may not project cleanly onto those domains. **Mitigation:** Phase 4 of integration plan explicitly produces sector-specific calibration (real estate vs life-settlement vs MMM vs BPO) — same framework, different weights per vertical. The framework survives sector specialization; only if it cannot survive does this concern materialize.
 
 5. **Brand-as-field claim is structurally strong but rhetorically dramatic** — "brand is not identity, brand is a field" reads as marketing. **Mitigation:** the doctrine reframes it as mathematical assertion: brand = the function from state to behavior. That is testable. Rhetoric serves recall; math serves audit.
 
