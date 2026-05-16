@@ -13,7 +13,7 @@ Usage:
                                           # Run nightly human-override pattern sweep
     python cli.py bootstrap-sources [--all | --source NAME] [--dry-run]
                                           # Idempotently register canonical OutcomeSources
-                                          # (Carmen Beach revenue, Ti Solutions conversions,
+                                          # (PDC revenue, Ti Solutions conversions,
                                           #  Gigaton-UI usage)
     python cli.py backfill-carmen-beach --csv <path> [--direct] [--dry-run]
                                           # One-time CSV-driven STVR revenue backfill
@@ -203,7 +203,7 @@ def cmd_bootstrap_sources(args: list[str]):
 
 
 def cmd_backfill_carmen_beach(args: list[str]):
-    """One-time CSV-driven Carmen Beach STVR revenue backfill.
+    """One-time CSV-driven PDC STVR revenue backfill.
 
     Delegates to `scripts.backfill_carmen_beach_revenue.main(...)`. Per
     Non-Negotiable #6, this never synthesizes rows — only what's in the

@@ -9,7 +9,7 @@ WHY: The aggregate `revenue_per_human_touch` metric tells us the
 ecosystem trend, but the operator UI needs to see which entity is
 producing the revenue (and which entity is absorbing the human
 touches). Per-entity breakdown is what makes the metric actionable for
-each business unit — without it, "is Carmen Beach contributing to the
+each business unit — without it, "is PDC contributing to the
 trend?" can't be answered without ad-hoc SQL.
 
 WHERE: Reads

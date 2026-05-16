@@ -300,7 +300,7 @@ rules:
 
   - id: MAJ-004
     name: unaudited_state_change
-    principle_ref: §6, Carmen Beach event-sourcing pattern
+    principle_ref: §6, PDC event-sourcing pattern
     severity: major
     scope: [codebase]
     detection:
@@ -398,7 +398,7 @@ rules:
 
   - id: MAJ-012
     name: in_memory_state_without_db_writethrough
-    principle_ref: §6, Carmen Beach event-sourcing pattern
+    principle_ref: §6, PDC event-sourcing pattern
     severity: major
     scope: [codebase]
     detection:
@@ -850,7 +850,7 @@ rules:
 
   - id: MIN-003
     name: bilingual_missing
-    principle_ref: §5.14, Carmen Beach pattern (EN+ES)
+    principle_ref: §5.14, PDC pattern (EN+ES)
     severity: minor
     scope: [codebase]
     detection:

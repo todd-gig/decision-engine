@@ -1,6 +1,6 @@
 """bootstrap_outcome_sources — idempotent registration of canonical OutcomeSources.
 
-WHAT: Registers three canonical outcome sources (Carmen Beach STVR revenue,
+WHAT: Registers three canonical outcome sources (PDC STVR revenue,
 Ti Solutions HubSpot conversions, Gigaton-UI feature usage) in the
 ovs_calibration.outcome_sources table. Each source carries its schema,
 decision_class_metric_map, and Pub/Sub ingestion contract.
@@ -74,7 +74,7 @@ class SourceSpec:
     schema: dict
 
 
-# Carmen Beach STVR revenue stream.
+# PDC STVR revenue stream.
 #   topic = outcomes.carmen-beach.revenue (canonical, matches CarmenBeachRevenueAdapter)
 #   booking_id is the idempotency key for backfill operations
 CARMEN_BEACH_REVENUE = SourceSpec(
@@ -317,7 +317,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="bootstrap_outcome_sources",
         description=(
             "Idempotently register canonical OutcomeSources "
-            "(Carmen Beach revenue, Ti Solutions conversions, Gigaton-UI usage)"
+            "(PDC revenue, Ti Solutions conversions, Gigaton-UI usage)"
         ),
     )
     group = parser.add_mutually_exclusive_group(required=True)

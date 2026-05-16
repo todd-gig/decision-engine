@@ -902,7 +902,7 @@ def calibration_counterfactual_get(record_id: str):
 def calibration_adapters_status():
     """Per-entity adapter health snapshot.
 
-    Returns one row per adapter (Carmen Beach, Ti Solutions, Gigaton-UI)
+    Returns one row per adapter (PDC, Ti Solutions, Gigaton-UI)
     with subscription path, configured flag, last message timestamp, and
     message counts. Safe to call even when GCP isn't configured —
     adapters report `configured=false` rather than failing.
@@ -1429,7 +1429,7 @@ def penrose_scoreboard_metric(metric: str, window_days: Optional[int] = None):
 def penrose_revenue_touch_rate(window_days: int = 90):
     """Per-entity Revenue per Human-Touch breakdown.
 
-    GET (read-only). Returns one row per known entity (Carmen Beach,
+    GET (read-only). Returns one row per known entity (PDC,
     Ti Solutions, Gigaton-UI) with revenue_usd, touches, and the
     resulting ratio, so the Founder UI can show a per-entity panel
     next to the aggregate scoreboard metric #7.

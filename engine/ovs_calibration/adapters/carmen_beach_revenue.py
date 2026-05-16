@@ -1,4 +1,4 @@
-"""CarmenBeachRevenueAdapter — Pub/Sub adapter for Carmen Beach revenue events.
+"""CarmenBeachRevenueAdapter — Pub/Sub adapter for PDC revenue events.
 
 Subscribed topic: `outcomes.carmen-beach.revenue`
 
@@ -14,7 +14,7 @@ Expected message shape (JSON):
     "extras":             dict        # arbitrary passthrough (channel, etc.)
   }
 
-Carmen Beach pricing decisions emit projection.metric in the family
+PDC pricing decisions emit projection.metric in the family
 `revenue.daily.<unit_id>` so the attribution daemon's direct stage fires
 immediately when the engine sees a same-unit revenue outcome.
 
@@ -27,7 +27,7 @@ from .base import AdapterMessage, EntityAdapterBase
 
 
 class CarmenBeachRevenueAdapter(EntityAdapterBase):
-    """Carmen Beach revenue outcomes -> OVS-Calibration outcome stream."""
+    """PDC revenue outcomes -> OVS-Calibration outcome stream."""
 
     entity = "carmen-beach"
     topic_suffix = "revenue"
