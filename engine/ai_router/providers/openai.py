@@ -5,6 +5,9 @@ router.py can distinguish "provider missing" from "provider failed".
 
 Pricing table is populated so cost-accounting tests can verify shape
 without an SDK installed.
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
 """
 from __future__ import annotations
 

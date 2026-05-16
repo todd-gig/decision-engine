@@ -7,6 +7,9 @@ can detect tampering.
 
 Schema mirrors specs/ai_routing_engine_v0.md §Audit table schema with
 Postgres-specific types replaced by SQLite-compatible equivalents.
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
 """
 from __future__ import annotations
 

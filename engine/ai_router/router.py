@@ -1,4 +1,8 @@
-"""Router — the public invoke() function with provider routing + audit envelope."""
+"""Router — the public invoke() function with provider routing + audit envelope.
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
+"""
 from __future__ import annotations
 
 import os
@@ -123,6 +127,8 @@ def invoke(
             response: ProviderResponse = mod.call(
                 prompt=prompt,
                 model=model,
+                prompt_version=prompt_version,
+                schema_version=schema_version,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 timeout_seconds=timeout_seconds,
