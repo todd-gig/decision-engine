@@ -1,6 +1,9 @@
 """codification_proposals SQLite schema + connection helpers.
 
 Schema mirrors specs/codification_engine_v0.md §Codification Proposal schema.
+
+penrose_signal: weakens
+penrose_dimension: codification
 """
 from __future__ import annotations
 

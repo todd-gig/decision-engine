@@ -8,6 +8,9 @@ v0.5: `approve_and_certify` mints a CodificationCertificate when an
 approver crosses the proposal into `approved_ship` / `approved_fallback`.
 Certificate generation is HMAC-signed + persisted with a matching .md
 file (see `engine/codification/certificate.py`).
+
+penrose_signal: weakens
+penrose_dimension: codification
 """
 from __future__ import annotations
 
