@@ -2,6 +2,13 @@
 
 Uses the official `anthropic` SDK when ANTHROPIC_API_KEY is set; raises
 RuntimeError if not configured (caller handles fallback chain).
+
+The `call(...)` signature requires `prompt_version` + `schema_version` —
+the chokepoint enforces CRIT-003 at the provider boundary as well as in
+the public router; ai_router cannot itself drift on the rule it polices.
+
+penrose_signal: weakens
+penrose_dimension: provider_neutrality
 """
 from __future__ import annotations
 
@@ -52,17 +59,33 @@ def call(
     *,
     prompt: str,
     model: str,
+    prompt_version: str,
+    schema_version: str,
     max_tokens: int = 1024,
     temperature: float = 0.0,
     timeout_seconds: int = 30,
 ) -> ProviderResponse:
-    """Invoke Anthropic; return ProviderResponse. Raises on SDK error."""
+    """Invoke Anthropic; return ProviderResponse. Raises on SDK error.
+
+    `prompt_version` + `schema_version` are required (CRIT-003): the
+    chokepoint cannot itself drift on the rule it enforces. Both are
+    forwarded into the SDK `metadata` envelope so they appear at the
+    actual call site (where the drift scanner inspects).
+    """
+    if not prompt_version:
+        raise ValueError("prompt_version is required (CRIT-003)")
+    if not schema_version:
+        raise ValueError("schema_version is required (CRIT-003)")
     client = _get_client()
     msg = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         temperature=temperature,
         messages=[{"role": "user", "content": prompt}],
+        metadata={
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+        },
     )
     text = msg.content[0].text if msg.content else ""
     usage = getattr(msg, "usage", None)

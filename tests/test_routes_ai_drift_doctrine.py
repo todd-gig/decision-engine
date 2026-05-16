@@ -28,7 +28,10 @@ def client():
 
 @pytest.fixture
 def fake_anthropic(monkeypatch):
-    def fake_call(*, prompt, model, max_tokens=1024, temperature=0.0, timeout_seconds=30):
+    def fake_call(
+        *, prompt, model, prompt_version, schema_version,
+        max_tokens=1024, temperature=0.0, timeout_seconds=30,
+    ):
         return ProviderResponse(
             text=f"http-echo:{prompt}",
             model_used=model,
