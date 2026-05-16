@@ -37,8 +37,22 @@ def _stable_hmac_key(monkeypatch):
 
 @pytest.fixture
 def fake_anthropic(monkeypatch):
-    """Force anthropic provider to be 'available' and return canned text."""
-    def fake_call(*, prompt, model, max_tokens=1024, temperature=0.0, timeout_seconds=30):
+    """Force anthropic provider to be 'available' and return canned text.
+
+    Signature mirrors the real `call(...)` — including required
+    prompt_version + schema_version (CRIT-003).
+    """
+    calls: list[dict] = []
+
+    def fake_call(
+        *, prompt, model, prompt_version, schema_version,
+        max_tokens=1024, temperature=0.0, timeout_seconds=30,
+    ):
+        calls.append({
+            "prompt": prompt, "model": model,
+            "prompt_version": prompt_version,
+            "schema_version": schema_version,
+        })
         return ProviderResponse(
             text=f"echo:{prompt}",
             model_used=model,
@@ -47,6 +61,7 @@ def fake_anthropic(monkeypatch):
         )
     monkeypatch.setattr(_anthropic_mod, "is_available", lambda: True)
     monkeypatch.setattr(_anthropic_mod, "call", fake_call)
+    fake_call.calls = calls  # type: ignore[attr-defined]
     yield fake_call
 
 
@@ -228,7 +243,10 @@ def test_invoke_with_audit_metadata(fake_anthropic, tmp_db):
 
 
 def test_cost_accounting_zero_when_tokens_unknown(monkeypatch, tmp_db):
-    def fake_call_no_tokens(*, prompt, model, max_tokens=1024, temperature=0.0, timeout_seconds=30):
+    def fake_call_no_tokens(
+        *, prompt, model, prompt_version, schema_version,
+        max_tokens=1024, temperature=0.0, timeout_seconds=30,
+    ):
         return ProviderResponse(text="ok", model_used=model, in_tokens=None, out_tokens=None)
     monkeypatch.setattr(_anthropic_mod, "is_available", lambda: True)
     monkeypatch.setattr(_anthropic_mod, "call", fake_call_no_tokens)
@@ -258,4 +276,68 @@ def test_invoke_rejects_unknown_provider(fake_anthropic, tmp_db):
             model="anything",
             prompt_version="t.v1", schema_version="ts.v1",
             caller_engine="t", caller_function="f", db_path=tmp_db,
+        )
+
+
+# ---------------------------------------------------------------------------
+# CRIT-003 enforcement at the Anthropic provider boundary.
+# The chokepoint cannot drift on the rule it enforces — prompt_version +
+# schema_version must propagate from invoke() into providers.anthropic.call()
+# and from there into the audit row.
+# ---------------------------------------------------------------------------
+
+def test_anthropic_provider_receives_prompt_and_schema_version(fake_anthropic, tmp_db):
+    """invoke() must propagate prompt_version + schema_version into providers.anthropic.call()."""
+    invoke(
+        prompt="hello",
+        provider="anthropic",
+        model="claude-opus-4-7",
+        prompt_version="pv.alpha",
+        schema_version="sv.beta",
+        caller_engine="test",
+        caller_function="f",
+        db_path=tmp_db,
+    )
+    assert len(fake_anthropic.calls) == 1
+    last = fake_anthropic.calls[-1]
+    assert last["prompt_version"] == "pv.alpha"
+    assert last["schema_version"] == "sv.beta"
+
+
+def test_anthropic_provider_records_prompt_and_schema_version_in_audit(fake_anthropic, tmp_db):
+    """The audit row written for an anthropic call records both versioning fields."""
+    invoke(
+        prompt="hello",
+        provider="anthropic",
+        model="claude-opus-4-7",
+        prompt_version="pv.audit",
+        schema_version="sv.audit",
+        caller_engine="test",
+        caller_function="f",
+        db_path=tmp_db,
+    )
+    row = _read_audit_row(tmp_db)
+    assert row["prompt_version"] == "pv.audit"
+    assert row["schema_version"] == "sv.audit"
+
+
+def test_anthropic_provider_rejects_missing_prompt_version():
+    """providers.anthropic.call(prompt_version="") must raise — no silent default."""
+    with pytest.raises(ValueError, match="prompt_version"):
+        _anthropic_mod.call(
+            prompt="x",
+            model="claude-opus-4-7",
+            prompt_version="",
+            schema_version="sv.v1",
+        )
+
+
+def test_anthropic_provider_rejects_missing_schema_version():
+    """providers.anthropic.call(schema_version="") must raise — no silent default."""
+    with pytest.raises(ValueError, match="schema_version"):
+        _anthropic_mod.call(
+            prompt="x",
+            model="claude-opus-4-7",
+            prompt_version="pv.v1",
+            schema_version="",
         )
