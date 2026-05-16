@@ -1008,6 +1008,68 @@ rules:
            keep schedulers as Cloud Run Jobs (always single-shot).
       File a v1 follow-up issue referencing this rule fire before merge.
 
+  - id: MIN-010
+    name: catalog_table_missing_tags_jsonb
+    principle_ref: foundational_modular_replication_via_input_substitution.md (est. 2026-05-16)
+    severity: minor
+    scope: [codebase]
+    detection:
+      type: structural
+      check: |
+        Any SQL migration (`infra/migrations/*.sql`, `migrations/*.sql`,
+        `alembic/versions/*.py`) that creates a NEW catalog-shaped table
+        — defined as a table whose name ends in `_catalog`, `_registry`,
+        `_taxonomy`, `_dictionary`, `_dimensions`, `_map`, OR a table
+        whose schema includes a `category` enum/varchar column — MUST
+        include a `tags JSONB` column (with default `'{}'::jsonb` or
+        explicit NULL semantics).
+
+        Per Modular Replication via Input Substitution: catalogs serve
+        multiple operators via tag-filter on `operator_context`. A
+        catalog table without `tags JSONB` cannot participate in
+        multi-axis filtering, forcing engines to bake operator identity
+        into code or duplicate tables per operator. Both anti-patterns.
+
+        Fires on:
+          - `CREATE TABLE <name>_catalog (...)` where the body has no
+            `tags JSONB` column (case-insensitive, optional NOT NULL,
+            optional DEFAULT)
+          - `CREATE TABLE <name>_registry (...)` same condition
+          - `CREATE TABLE <name>_taxonomy/_dictionary/_dimensions/_map`
+            same condition
+          - Alembic `op.create_table(...)` where the table name matches
+            those suffixes and no `Column("tags", JSONB(...))` is among
+            the columns
+          - Any `CREATE TABLE` whose body contains a `category` column
+            (`category VARCHAR` / `category TEXT` / `category` enum)
+            AND no `tags JSONB` column
+
+        Negative signal (passes): the same migration ALSO contains
+          - A `tags JSONB` column declaration in the same CREATE TABLE
+          - OR a follow-up `ALTER TABLE <name> ADD COLUMN tags JSONB`
+            within the same migration file
+          - OR a comment `-- drift-sentinel: MIN-010 N/A because <reason>`
+            on the line above the table definition
+      patterns:
+        - 'CREATE TABLE\s+(\w+_(?:catalog|registry|taxonomy|dictionary|dimensions|map))\b'
+        - 'op\.create_table\([\"''](\w+_(?:catalog|registry|taxonomy|dictionary|dimensions|map))[\"'']'
+        - 'category\s+(?:VARCHAR|TEXT|ENUM)'
+      negative_signal: |
+        Parse the CREATE TABLE body. If it contains `tags\s+JSONB` (case-
+        insensitive), pass. Else, fire as MIN-010.
+    remediation: |
+      Add a `tags JSONB NOT NULL DEFAULT '{}'::jsonb` column plus a GIN
+      index `CREATE INDEX idx_<table>_tags ON <table> USING GIN (tags)`.
+      See migration 038_connectors_catalog_tags.sql in sovereign-
+      influence-engine as the canonical pattern.
+
+      Tag axes (extensible): industry / sub_vertical / country / state
+      / city / regime / channel / funnel_role / audience /
+      lifecycle_stage / source / observed_at / effective_from /
+      effective_until / modality / ppim_brand_dimension.
+
+      Doctrinal anchor: docs/doctrine/foundational_modular_replication_via_input_substitution.md
+
 # ============================================================================
 # INFO — APPROVED EXCEPTIONS / DOCUMENTED OVERRIDES
 # ============================================================================
