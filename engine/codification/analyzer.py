@@ -7,6 +7,9 @@ compute candidate scores, return ranked candidates.
 The proposer + simulator steps come later. v0 of the analyzer is
 sufficient to populate the proposal queue if the operator wants a
 candidate-only view (open_top_n_as_proposals=N writes minimal proposals).
+
+penrose_signal: weakens
+penrose_dimension: codification
 """
 from __future__ import annotations
 
